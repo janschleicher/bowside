@@ -39,6 +39,7 @@ dependencies = [
     "seaborn",
     "networkx",
     "scanpy",
+    "scvelo",
     "torch",
 ]
 
