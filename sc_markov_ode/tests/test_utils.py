@@ -1,23 +1,29 @@
 import logging
+import os
 from typing import Literal, Optional
 
 import numpy as np
 import pytest
 import scanpy as sc
 import scvelo as scv
-from scipy.sparse import issparse
+from scipy.sparse import sparray
 
 from sc_markov_ode.utils import check_transition_matrix
 
-ADATA = scv.datasets.pancreas()
-scv.pp.filter_genes(ADATA, min_shared_counts=20)
-scv.pp.normalize_per_cell(ADATA)
-scv.pp.filter_genes_dispersion(ADATA, n_top_genes=2000)
-sc.pp.log1p(ADATA)
-sc.pp.neighbors(ADATA, n_pcs=30, n_neighbors=30)
-scv.pp.moments(ADATA, n_pcs=30, n_neighbors=30)
-scv.tl.velocity(ADATA)
-scv.tl.velocity_graph(ADATA)
+TEST_DATA_PATH = "test_data/adata_velocity.h5ad"
+if os.path.exists(TEST_DATA_PATH):
+    ADATA = sc.read_h5ad(TEST_DATA_PATH)
+else:
+    ADATA = scv.datasets.pancreas(file_path="test_data/pancreas.h5ad")
+    scv.pp.filter_genes(ADATA, min_shared_counts=20)
+    scv.pp.normalize_per_cell(ADATA)
+    scv.pp.filter_genes_dispersion(ADATA, n_top_genes=2000)
+    sc.pp.log1p(ADATA)
+    sc.pp.neighbors(ADATA, n_pcs=30, n_neighbors=30)
+    scv.pp.moments(ADATA, n_pcs=30, n_neighbors=30)
+    scv.tl.velocity(ADATA)
+    scv.tl.velocity_graph(ADATA)
+    ADATA.write_h5ad(TEST_DATA_PATH)
 
 
 @pytest.mark.parametrize(
@@ -55,8 +61,8 @@ def test_check_tpm(
     assert tpm_key in adata.obsp.keys(), (
         "Transition probability matrix not present after check."
     )
-    assert issparse(adata.obsp[tpm_key]), (
-        "Transition probability matrix not sparse after check."
+    assert isinstance(adata.obsp[tpm_key], sparray), (
+        "Transition probability matrix not sparse array after check."
     )
     assert np.allclose(adata.obsp[tpm_key].sum(axis=1), 1.0), (
         "Rows of the transition probability matrix do not sum to 1 after check."
