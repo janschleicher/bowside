@@ -8,7 +8,7 @@ import numpy as np
 import torch
 from tqdm.auto import tqdm
 
-from .utils import check_transition_matrix
+from sc_markov_ode.utils import check_transition_matrix
 
 log = logging.getLogger(__name__)
 
@@ -240,7 +240,7 @@ class MarkovSampler:
             desc="Sampling cell sequences",
             initial=1,
             total=max_iter,
-            unit="step(s)",
+            unit=" steps",
         ):
             prev_states = state_indices[:, step - 1]
             probs = tpm_[prev_states]
