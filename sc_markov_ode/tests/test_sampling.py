@@ -62,7 +62,7 @@ def test_stationary_distribution(caplog, max_iter: int):
     sampler = MarkovSampler(sc.read_h5ad(TEST_DATA_PATH))
     caplog.clear()
     assert torch.allclose(
-        sampler.p_init.sum(), torch.tensor(1.0, dtype=torch.float64)
+        sampler.p_init.sum(), torch.tensor(1.0, dtype=torch.float32)
     ), "The initial distribution should sum to 1."
 
     with caplog.at_level(logging.INFO):
@@ -91,5 +91,5 @@ def test_stationary_distribution(caplog, max_iter: int):
         )
 
     assert torch.allclose(
-        sampler.p_term.sum(), torch.tensor(1.0, dtype=torch.float64)
+        sampler.p_term.sum(), torch.tensor(1.0, dtype=torch.float32)
     ), "The stationary distribution should sum to 1."

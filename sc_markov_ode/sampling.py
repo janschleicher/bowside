@@ -68,10 +68,10 @@ class MarkovSampler:
         data = torch.from_numpy(self.adata.obsp[tpm_key].data)
         shape = self.adata.obsp[tpm_key].shape
         self.tpm = torch.sparse_csr_tensor(
-            indptr, indices, data, size=shape, dtype=torch.float64
+            indptr, indices, data, size=shape, dtype=torch.float32
         )
         self.p_init = torch.tensor(
-            self.adata.obs["root_cells"].values, dtype=torch.float64
+            self.adata.obs["root_cells"].values, dtype=torch.float32
         )
         self.p_init = self.p_init / self.p_init.sum()
 
@@ -122,9 +122,9 @@ class MarkovSampler:
         # Store in AnnData object as numpy arrays
         res = {
             "cell_sequences": markov_chains_max_iter[:, : self.convergence]
-            .detach()
+            .cpu()
             .numpy(),
-            "cell_sequences_max_iter": markov_chains_max_iter.detach().numpy(),
+            "cell_sequences_max_iter": markov_chains_max_iter.cpu().numpy(),
             "convergence": self.convergence,
             "params": {
                 "num_chains": num_chains,
@@ -208,7 +208,12 @@ class MarkovSampler:
             Cell sequences of shape (num_chains, max_iter).
         """
         # Select device
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        device = (
+            torch.accelerator.current_accelerator()
+            if torch.accelerator.is_available()
+            else torch.device("cpu")
+        )
+        log.info(f"Using {device.type} device.")
         if device.type == "cpu":
             if n_jobs < 0:
                 n_jobs = torch.get_num_threads() + 1 + n_jobs
@@ -217,11 +222,11 @@ class MarkovSampler:
         np_rng = np.random.default_rng(seed)
 
         # Move tensors to device
-        tpm = self.tpm.to(device)
-        p_init = self.p_init.detach().numpy()
+        tpm = self.tpm.to_dense().to(device)
+        p_init = self.p_init.numpy()
 
         # Precompute cumsum for each row
-        tpm_ = tpm.to_dense().cumsum(1)
+        tpm_cumsum = tpm.cumsum(1)
 
         # Parallel random steps and initial states
         random_steps = torch.rand(num_chains, max_iter - 1, device=device)
@@ -243,7 +248,7 @@ class MarkovSampler:
             unit=" steps",
         ):
             prev_states = state_indices[:, step - 1]
-            probs = tpm_[prev_states]
+            probs = tpm_cumsum[prev_states]
             state_indices[:, step] = torch.searchsorted(
                 probs, random_steps[:, step - 1].unsqueeze(1), side="right"
             ).squeeze(1)
