@@ -38,7 +38,7 @@ dependencies = [
     "matplotlib",
     "seaborn",
     "networkx",
-    "scanpy",
+    "scanpy>=1.10",
     "scvelo",
     "torch",
 ]

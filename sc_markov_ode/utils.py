@@ -12,7 +12,7 @@ def check_transition_matrix(
     adata: ad.AnnData,
     tpm_key: str = "T_forward",
     recompute_matrix: bool = False,
-    self_transitions=False,
+    self_transitions: bool = False,
 ):
     """
     Check if a proper transition probability matrix is present.

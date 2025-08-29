@@ -17,6 +17,10 @@ def setup_adata():
             file_path=Path(os.path.dirname(os.path.realpath(__file__)))
             / "test_data/pancreas.h5ad"
         )
+        # Subsample to 500 cells
+        sc.pp.sample(ADATA, n=500, axis="obs", rng=42)
+
+        # Perform preprocessing
         scv.pp.filter_genes(ADATA, min_shared_counts=20)
         scv.pp.normalize_per_cell(ADATA)
         scv.pp.filter_genes_dispersion(ADATA, n_top_genes=2000)
