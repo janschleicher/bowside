@@ -41,6 +41,7 @@ dependencies = [
     "scanpy>=1.10",
     "scvelo",
     "torch",
+    "torchdiffeq",
 ]
 
 [project.urls]
