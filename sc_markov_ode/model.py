@@ -1,6 +1,6 @@
 """Module for dynamic gene regulatory network model."""
 
-from typing import Optional
+from typing import Literal, Optional
 
 import torch
 
@@ -18,6 +18,11 @@ class GRNModel(torch.nn.Module):
         0 (no regulation), and 1 (activation) are allowed. The value of
         adj[i, j] determines if there is an edge from gene i to gene j.
         Default: None.
+    adj_init_normal : bool, optional
+        Whether to initialize the weighted adjacency matrix from a
+        normal distribution if `adj` is provided. Default: False.
+    activation : Literal["sigmoid", "identity", "softplus", "relu"], optional
+        Activation function for the production rates. Default: "sigmoid".
     """
 
     def __init__(
@@ -25,6 +30,7 @@ class GRNModel(torch.nn.Module):
         n_genes: int,
         adj: Optional[torch.Tensor] = None,
         adj_init_normal: bool = False,
+        activation: Literal["sigmoid", "identity", "softplus", "relu"] = "sigmoid",
     ):
         super().__init__()
 
@@ -67,7 +73,15 @@ class GRNModel(torch.nn.Module):
         torch.nn.init.normal_(self.log_decay_rate, mean=0, std=1)
         self.log_decay_rate = torch.nn.Parameter(self.log_decay_rate)
 
-        self.activation = torch.nn.Sigmoid()
+        match activation:
+            case "sigmoid":
+                self.activation = torch.nn.Sigmoid()
+            case "identity":
+                self.activation = torch.nn.Identity()
+            case "softplus":
+                self.activation = torch.nn.Softplus()
+            case "relu":
+                self.activation = torch.nn.ReLU()
 
     def forward(self, t, x):
         return (
