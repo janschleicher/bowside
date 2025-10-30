@@ -42,6 +42,7 @@ dependencies = [
     "scvelo",
     "torch",
     "torchdiffeq",
+    "torchsde",
 ]
 
 [project.urls]
