@@ -46,11 +46,14 @@ class GRNModel(torch.nn.Module):
             assert torch.isin(adj, torch.tensor([-1, 0, 1])).all(), (
                 "Adjacency matrix for initialization may only contain values -1, 0, and 1."
             )
+
+            # Mask to restrict it to only those edges that are in the prior
+            self.adj_mask = (adj != 0).int()
+
             if adj_init_normal:
                 self.adj = self.adj.abs() * adj
             else:
                 self.adj.copy_(adj)
-            self.adj_mask = adj.abs()  # TODO: remove
         else:
             sparse_mask = torch.empty_like(self.adj)
             torch.nn.init.sparse_(
@@ -59,9 +62,7 @@ class GRNModel(torch.nn.Module):
             self.adj = self.adj * (sparse_mask > 0)
             self.adj_mask = torch.ones_like(self.adj)  # TODO: remove
         self.adj = torch.nn.Parameter(self.adj)
-        self.adj_mask = torch.nn.Parameter(
-            self.adj_mask, requires_grad=False
-        )  # TODO: remove
+        self.adj_mask = torch.nn.Parameter(self.adj_mask, requires_grad=False)
         self.bias = torch.empty(n_genes)
         torch.nn.init.normal_(self.bias, mean=0, std=0.01)
         self.bias = torch.nn.Parameter(self.bias)
@@ -84,6 +85,8 @@ class GRNModel(torch.nn.Module):
                 self.activation = torch.nn.ReLU()
 
     def forward(self, t, x):
+        # TODO: Add scaling factor inside sigmoid function so it does not saturate so easily
+        # or initialize adj with smaller weights to facilitate training
         return (
             self.activation(((self.adj * self.adj_mask).T @ x.T).T + self.bias)
             - self.log_decay_rate.exp() * x
