@@ -20,7 +20,10 @@ class GRNModel(torch.nn.Module):
         Default: None.
     adj_init_normal : bool, optional
         Whether to initialize the weighted adjacency matrix from a
-        normal distribution if `adj` is provided. Default: False.
+        normal distribution. Default: False (initializes with ones).
+    adj_sparsity : float, optional
+        Sparsity level of initial, random adjacency matrix if `adj` is
+        not provided. Default: 0.9.
     activation : Literal["sigmoid", "identity", "softplus", "relu"], optional
         Activation function for the production rates. Default: "sigmoid".
     """
@@ -30,13 +33,15 @@ class GRNModel(torch.nn.Module):
         n_genes: int,
         adj: Optional[torch.Tensor] = None,
         adj_init_normal: bool = False,
+        adj_sparsity: float = 0.9,
         activation: Literal["sigmoid", "identity", "softplus", "relu"] = "sigmoid",
     ):
         super().__init__()
 
         # Initialize adjacency matrix; adj[i, j] is the edge from gene i to gene j
-        self.adj = torch.empty(n_genes, n_genes)
-        torch.nn.init.normal_(self.adj, mean=0, std=1)
+        self.adj = torch.ones(n_genes, n_genes)
+        if adj_init_normal:
+            torch.nn.init.normal_(self.adj, mean=0, std=1)
         if adj is not None:
             self.adj_init = torch.empty(n_genes, n_genes).copy_(adj)
             self.adj_init = torch.nn.Parameter(self.adj_init, requires_grad=False)
@@ -50,17 +55,16 @@ class GRNModel(torch.nn.Module):
             # Mask to restrict it to only those edges that are in the prior
             self.adj_mask = (adj != 0).int()
 
-            if adj_init_normal:
-                self.adj = self.adj.abs() * adj
-            else:
-                self.adj.copy_(adj)
+            # Ensure that adj has same signs as adj_init
+            self.adj = self.adj.abs() * adj
+
         else:
             sparse_mask = torch.empty_like(self.adj)
             torch.nn.init.sparse_(
-                sparse_mask, sparsity=0.9
+                sparse_mask, sparsity=adj_sparsity
             )  # TODO: find right sparsity level
             self.adj = self.adj * (sparse_mask > 0)
-            self.adj_mask = torch.ones_like(self.adj)  # TODO: remove
+            self.adj_mask = torch.ones_like(self.adj)
         self.adj = torch.nn.Parameter(self.adj)
         self.adj_mask = torch.nn.Parameter(self.adj_mask, requires_grad=False)
         self.bias = torch.empty(n_genes)
@@ -109,6 +113,9 @@ class GRNModelSDE(GRNModel):
     adj_init_normal : bool, optional
         Whether to initialize the weighted adjacency matrix from a
         normal distribution if `adj` is provided. Default: False.
+    adj_sparsity : float, optional
+        Sparsity level of initial, random adjacency matrix if `adj` is
+        not provided. Default: 0.9.
     activation : Literal["sigmoid", "identity", "softplus", "relu"], optional
         Activation function for the production rates. Default: "sigmoid".
     sde_type: Literal["ito", "stratonovich"], optional
@@ -123,6 +130,7 @@ class GRNModelSDE(GRNModel):
         n_genes: int,
         adj: Optional[torch.Tensor] = None,
         adj_init_normal: bool = False,
+        adj_sparsity: float = 0.9,
         activation: Literal["sigmoid", "identity", "softplus", "relu"] = "sigmoid",
         sde_type: Literal["ito", "stratonovich"] = "ito",
         sigma: float = 0.1,
@@ -131,6 +139,7 @@ class GRNModelSDE(GRNModel):
             n_genes=n_genes,
             adj=adj,
             adj_init_normal=adj_init_normal,
+            adj_sparsity=adj_sparsity,
             activation=activation,
         )
         self.noise_type = "diagonal"
