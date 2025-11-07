@@ -61,19 +61,19 @@ class GRNModel(torch.nn.Module):
         else:
             sparse_mask = torch.empty_like(self.adj)
             torch.nn.init.sparse_(
-                sparse_mask, sparsity=adj_sparsity
+                sparse_mask, sparsity=adj_sparsity, std=1
             )  # TODO: find right sparsity level
-            self.adj = self.adj * (sparse_mask > 0)
+            self.adj = self.adj * (sparse_mask != 0)
             self.adj_mask = torch.ones_like(self.adj)
         self.adj = torch.nn.Parameter(self.adj)
         self.adj_mask = torch.nn.Parameter(self.adj_mask, requires_grad=False)
-        self.bias = torch.empty(n_genes)
-        torch.nn.init.normal_(self.bias, mean=0, std=0.01)
-        self.bias = torch.nn.Parameter(self.bias)
 
-        # Use log of decay rates to ensure positivity
+        # Use log of bias and decay rates to ensure positivity
         # TODO: consider using parametrization instead
         # (https://docs.pytorch.org/tutorials/intermediate/parametrizations.html)
+        self.log_bias = torch.empty(n_genes)
+        torch.nn.init.normal_(self.log_bias, mean=0, std=0.01)
+        self.log_bias = torch.nn.Parameter(self.log_bias)
         self.log_decay_rate = torch.empty(n_genes)
         torch.nn.init.normal_(self.log_decay_rate, mean=0, std=1)
         self.log_decay_rate = torch.nn.Parameter(self.log_decay_rate)
@@ -92,7 +92,9 @@ class GRNModel(torch.nn.Module):
         # TODO: Add scaling factor inside sigmoid function so it does not saturate so easily
         # or initialize adj with smaller weights to facilitate training
         return (
-            self.activation(((self.adj * self.adj_mask).T @ x.T).T + self.bias)
+            self.activation(
+                ((self.adj * self.adj_mask).T @ x.T).T + self.log_bias.exp()
+            )
             - self.log_decay_rate.exp() * x
         )
 
