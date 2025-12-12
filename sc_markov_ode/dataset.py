@@ -7,7 +7,7 @@ import numpy as np
 import pandas as pd
 import torch
 from numpy.typing import NDArray
-from scipy.sparse import issparse
+from scipy import sparse
 from torch.utils.data import Dataset
 
 from sc_markov_ode.sampling import MarkovSampler
@@ -61,7 +61,7 @@ class MarkovChainDataset(Dataset):
     """Gene expression tensor of shape (n_cells, n_genes)."""
     sampler: MarkovSampler
     """Instance of Markov chain sampler for sampling cell sequences."""
-    markov_chains: np.ndarray
+    markov_chains: torch.Tensor
     """Markov chains of cell sequences, represented by their index."""
     gene_names: pd.Index
     """Gene names index of shape (n_genes,)."""
@@ -84,16 +84,27 @@ class MarkovChainDataset(Dataset):
     ):
         # Prepare expression data
         self.adata = adata.copy() if copy else adata
-        self.X = self.adata.X if layer is None else self.adata.layers[layer]
+        X = self.adata.X if layer is None else self.adata.layers[layer]
+        if X is None:
+            raise ValueError(
+                "Invalid gene expression matrix. Make sure that adata.X is present."
+            )
         self.gene_names = self.adata.var_names
         if mask_var is not None:
             if isinstance(mask_var, str):
-                mask_var = self.adata.var[mask_var].values
-            self.X = self.X[:, mask_var]
+                if adata.var[mask_var].dtype != bool:
+                    raise TypeError(
+                        f"Expected adata.var[mask_var] to be of type bool, but got type {adata.var[mask_var].dtype}"
+                    )
+                mask_var = self.adata.var[mask_var].to_numpy()
+            X = X[:, mask_var]
             self.gene_names = self.gene_names[mask_var]
-        if issparse(self.X):
-            self.X = self.X.toarray()
-        self.X = torch.from_numpy(self.X)
+        if isinstance(
+            X,
+            (sparse.csc_array, sparse.csr_array, sparse.csc_matrix, sparse.csr_matrix),
+        ):
+            X = X.toarray()
+        self.X = torch.from_numpy(X)
 
         # Sample Markov chains
         self.sampler = MarkovSampler(
@@ -157,25 +168,36 @@ class VelocityDataset(Dataset):
     def __init__(
         self,
         adata: ad.AnnData,
-        layer: str = "Ms",
+        layer: Optional[str] = "Ms",
         mask_var: Optional[Union[NDArray[np.bool_], str]] = "highly_variable",
         vkey: str = "velocity",
     ):
         # Prepare expression data
         self.adata = adata
-        self.X = self.adata.layers[layer]
-        self.V = self.adata.layers[vkey]
+        X = self.adata.X if layer is None else self.adata.layers[layer]
+        if X is None:
+            raise ValueError(
+                "Invalid gene expression matrix. Make sure that adata.X is present."
+            )
+        V = self.adata.layers[vkey]
         self.gene_names = adata.var_names
         if mask_var is not None:
             if isinstance(mask_var, str):
-                mask_var = self.adata.var[mask_var].values
-            self.X = self.X[:, mask_var]
-            self.V = self.V[:, mask_var]
+                if adata.var[mask_var].dtype != bool:
+                    raise TypeError(
+                        f"Expected adata.var[mask_var] to be of type bool, but got type {adata.var[mask_var].dtype}"
+                    )
+                mask_var = self.adata.var[mask_var].to_numpy()
+            X = X[:, mask_var]
+            V = V[:, mask_var]
             self.gene_names = self.gene_names[mask_var]
-        if issparse(self.X):
-            self.X = self.X.toarray()
-        self.X = torch.from_numpy(self.X.astype(np.float32))
-        self.V = torch.from_numpy(self.V.astype(np.float32))
+        if isinstance(
+            X,
+            (sparse.csc_array, sparse.csr_array, sparse.csc_matrix, sparse.csr_matrix),
+        ):
+            X = X.toarray()
+        self.X = torch.from_numpy(X).to(torch.float32)
+        self.V = torch.from_numpy(V).to(torch.float32)
 
     def __len__(self):
         return self.X.shape[0]

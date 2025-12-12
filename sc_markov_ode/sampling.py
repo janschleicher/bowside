@@ -63,13 +63,7 @@ class MarkovSampler:
             recompute_matrix=recompute_matrix,
             self_transitions=self_transitions,
         )
-        indptr = torch.from_numpy(self.adata.obsp[tpm_key].indptr).to(torch.int32)
-        indices = torch.from_numpy(self.adata.obsp[tpm_key].indices).to(torch.int32)
-        data = torch.from_numpy(self.adata.obsp[tpm_key].data)
-        shape = self.adata.obsp[tpm_key].shape
-        self.tpm = torch.sparse_csr_tensor(
-            indptr, indices, data, size=shape, dtype=torch.float32
-        )
+        self.tpm = torch.from_numpy(self.adata.obsp[tpm_key]).to(torch.float32)
         self.p_init = torch.tensor(
             self.adata.obs["root_cells"].values, dtype=torch.float32
         )
@@ -154,6 +148,9 @@ class MarkovSampler:
         atol : float, optional
             Absolute tolerance for convergence, by default 1e-5.
         """
+        # FIXME: For pancreas dataset, convergence on MacBook is after 390 steps,
+        # but after 306 steps on de.NBI GPU machine!
+        # FIXME: Root cells are also different -> that's probably the reason!
         converged = False
         pi = self.p_init
 
@@ -208,11 +205,9 @@ class MarkovSampler:
             Cell sequences of shape (num_chains, max_iter).
         """
         # Select device
-        device = (
-            torch.accelerator.current_accelerator()
-            if torch.accelerator.is_available()
-            else torch.device("cpu")
-        )
+        device = torch.accelerator.current_accelerator()
+        if not device:
+            device = torch.device("cpu")
         log.info(f"Using {device.type} device.")
         if device.type == "cpu":
             if n_jobs < 0:
