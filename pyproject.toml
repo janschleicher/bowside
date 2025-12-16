@@ -124,7 +124,7 @@ docstring-code-format = true
 
 #SOURCE: https://stackoverflow.com/a/76739181
 [tool.setuptools.packages.find]
-where = ["."] # list of folders that contain the packages (["."] by default)
+where = ["src"] # list of folders that contain the packages (["."] by default)
 include = [
     "sc_markov_ode",
 ] # package names should match these glob patterns (["*"] by default)
@@ -133,3 +133,8 @@ namespaces = false # to disable scanning PEP 420 namespaces (true by default)
 
 [tool.coverage.run]
 omit = ["*/tests/*"]
+
+[tool.pytest.ini_options]
+addopts = [
+    "--import-mode=importlib",
+]
