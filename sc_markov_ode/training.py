@@ -1,8 +1,10 @@
 """Module for training of dynamic GRN model."""
 
+import logging
 from collections.abc import Callable
 from functools import partial
-from typing import Any, Optional, Protocol
+from pathlib import Path
+from typing import Any, List, Optional, Protocol, Tuple, Union
 
 import torch
 from torchdiffeq import odeint, odeint_adjoint
@@ -10,6 +12,8 @@ from torchsde import sdeint, sdeint_adjoint
 
 from sc_markov_ode.dataset import MarkovChainDataset
 from sc_markov_ode.model import GRNModel, GRNModelSDE
+
+log = logging.getLogger(__name__)
 
 
 def mean_squared_error(y_true: torch.Tensor, y_pred: torch.Tensor) -> torch.Tensor:
@@ -328,7 +332,9 @@ def train_integration(
     adjoint_rtol: float = 1e-5,
     loss_kwargs: dict = {},
     num_workers_loader: int = 0,
-) -> None:
+    checkpoint: Optional[int] = None,
+    checkpoint_dir: Optional[Union[str, Path]] = None,
+) -> Tuple[List[float], List[float]]:
     """
     Train a gene regulatory network ODE/SDE model using integration.
 
@@ -370,7 +376,44 @@ def train_integration(
     num_workers_loader : int, optional
         Number of subprocesses to use for data loading. With the default,
         0, data is loaded in the main process.
+    checkpoint : int, optional
+        Save the model state every `checkpoint` epochs. The default None
+        corresponds to not saving any checkpoints.
+
+    Returns
+    -------
+    Tuple[List[float], List[float]]
+        Train and test losses for every epoch.
+
+    Raises
+    ------
+    TypeError
+        An error is raised if `checkpoint` is not of type int or if
+        `checkpoint_dir` is not of type str or Path.
+    ValueError
+        An error is raised if `checkpoint` is larger than `num_epochs`.
     """
+    if checkpoint is not None:
+        if not isinstance(checkpoint, int):
+            raise TypeError(
+                f"Argument `checkpoint` must be of type int, but got {type(checkpoint)}."
+            )
+        elif checkpoint > num_epochs:
+            raise ValueError(
+                f"Argument `checkpoint` must be smaller than `num_epochs`. "
+                f"Got checkpoint={checkpoint}, num_epochs={num_epochs}."
+            )
+
+    if checkpoint_dir is None:
+        checkpoint_dir = Path("./checkpoints")
+    elif isinstance(checkpoint_dir, str):
+        checkpoint_dir = Path(checkpoint_dir)
+    elif not isinstance(checkpoint_dir, Path):
+        raise TypeError(
+            f"Argument `checkpoint_dir` must be of type str or Path, "
+            f"but got {type(checkpoint_dir)}"
+        )
+
     # Select GPU if available
     device = torch.accelerator.current_accelerator()
     if not device:
@@ -405,12 +448,15 @@ def train_integration(
     # Train for multiple epochs
     num_batches_train = len(trainloader)
     num_batches_test = len(testloader)
+    train_losses: List[float] = []
+    test_losses: List[float] = []
+
     for epoch in range(num_epochs):
         # Training
-        running_loss = 0.0
+        train_loss = 0.0
         for data in trainloader:
             y = data.to(device)
-            running_loss += train_step_integration(
+            train_loss += train_step_integration(
                 y=y,
                 model=model,
                 optimizer=optimizer,
@@ -424,6 +470,8 @@ def train_integration(
                 adjoint_rtol=adjoint_rtol,
                 loss_kwargs=loss_kwargs,
             )
+        train_loss = train_loss / num_batches_train
+        train_losses.append(train_loss)
 
         # Evaluation
         test_loss = 0.0
@@ -439,7 +487,22 @@ def train_integration(
                 rtol=rtol,
                 loss_kwargs=loss_kwargs,
             )
+        test_loss = test_loss / num_batches_test
+        test_losses.append(test_loss)
 
-        print(
-            f"Epoch {epoch}: training loss: {running_loss / num_batches_train}, test loss: {test_loss / num_batches_test}"
-        )
+        log.info(f"Epoch {epoch}: training loss: {train_loss}, test loss: {test_loss}")
+
+        # Save checkpoint
+        if checkpoint is not None and epoch % checkpoint == 0:
+            torch.save(
+                {
+                    "epoch": epoch,
+                    "model_state_dict": model.state_dict(),
+                    "optimizer_state_dict": optimizer.state_dict(),
+                    "train_loss": train_loss,
+                    "test_loss": test_loss,
+                },
+                checkpoint_dir / f"checkpoint_e{epoch:4d}.tar",
+            )
+
+    return train_losses, test_losses
