@@ -146,7 +146,7 @@ class GRNModelSDE(GRNModel):
         )
         self.noise_type = "diagonal"
         self.sde_type = sde_type
-        self.sigma = torch.tensor([[sigma]])
+        self.sigma = torch.nn.parameter.Buffer(torch.tensor([[sigma]]))
 
     def f(self, t, x):
         return super().forward(t, x)
