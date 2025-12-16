@@ -7,7 +7,7 @@ import scvelo as scv
 from numpy.typing import NDArray
 
 from sc_markov_ode.dataset import MarkovChainDataset, VelocityDataset
-from sc_markov_ode.tests.conftest import TEST_DATA_PATH
+from tests.conftest import TEST_DATA_PATH
 
 
 @pytest.fixture(scope="module", autouse=True)

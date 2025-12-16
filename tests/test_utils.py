@@ -6,8 +6,8 @@ import pytest
 import scanpy as sc
 import scvelo as scv
 
-from sc_markov_ode.tests.conftest import TEST_DATA_PATH
 from sc_markov_ode.utils import check_transition_matrix
+from tests.conftest import TEST_DATA_PATH
 
 
 @pytest.mark.parametrize(

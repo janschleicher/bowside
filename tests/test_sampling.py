@@ -7,7 +7,7 @@ import scanpy as sc
 import torch
 
 from sc_markov_ode.sampling import MarkovSampler
-from sc_markov_ode.tests.conftest import TEST_DATA_PATH
+from tests.conftest import TEST_DATA_PATH
 
 
 @pytest.mark.parametrize(
