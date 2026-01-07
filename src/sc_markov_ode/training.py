@@ -16,50 +16,14 @@ from sc_markov_ode.model import GRNModel, GRNModelSDE
 log = logging.getLogger(__name__)
 
 
-def mean_squared_error(y_true: torch.Tensor, y_pred: torch.Tensor) -> torch.Tensor:
-    """
-    Mean squared error between two tensors.
-
-    Parameters
-    ----------
-    y_true : torch.Tensor
-        True values.
-    y_pred : torch.Tensor
-        Predicted values.
-
-    Returns
-    -------
-    torch.Tensor
-        Mean squared error.
-    """
-    return torch.mean((y_pred - y_true) ** 2)
-
-
-def mean_absolute_error(y_true: torch.Tensor, y_pred: torch.Tensor) -> torch.Tensor:
-    """
-    Mean absolute error between two tensors.
-
-    Parameters
-    ----------
-    y_true : torch.Tensor
-        True values.
-    y_pred : torch.Tensor
-        Predicted values.
-
-    Returns
-    -------
-    torch.Tensor
-        Mean absolute error.
-    """
-    return torch.mean((y_pred - y_true).abs())
-
-
 def qqloss(
-    y_true: torch.Tensor,
     y_pred: torch.Tensor,
+    y_true: torch.Tensor,
     dim: int = 0,
     n_quantiles: int = 100,
-    metric: Callable[[torch.Tensor, torch.Tensor], torch.Tensor] = mean_absolute_error,
+    metric: Callable[
+        [torch.Tensor, torch.Tensor], torch.Tensor
+    ] = torch.nn.functional.mse_loss,
 ) -> torch.Tensor:
     """
     Compute the difference between the quantiles of two tensors along a
@@ -67,16 +31,17 @@ def qqloss(
 
     Parameters
     ----------
-    y_true : torch.Tensor
-        True values.
     y_pred : torch.Tensor
         Predicted values.
+    y_true : torch.Tensor
+        True values.
     dim : int, optional
         The dimension to reduce. Default: 0.
     n_quantiles : int, optional
         Number of quantiles. Default: 100.
     metric : Callable, optional
-        Metric for comparing the quantiles. Default: `mean_absolute_error`.
+        Metric for comparing the quantiles. Default:
+        `torch.nn.functional.mse_loss`.
 
     Returns
     -------
@@ -92,7 +57,7 @@ def qqloss(
 
 class LossFunction(Protocol):
     def __call__(
-        self, y_true: torch.Tensor, y_pred: torch.Tensor, *args: Any, **kwargs: Any
+        self, y_pred: torch.Tensor, y_true: torch.Tensor, *args: Any, **kwargs: Any
     ) -> torch.Tensor: ...
 
 
@@ -253,7 +218,7 @@ def train_step_integration(
     )
 
     # Backpropagation
-    loss = loss_func(y, pred, **loss_kwargs)
+    loss = loss_func(pred, y, **loss_kwargs)
     loss.backward()
     optimizer.step()
     optimizer.zero_grad()
@@ -312,7 +277,7 @@ def test(
             atol=atol,
             rtol=rtol,
         )
-        return loss_func(y, pred, loss_kwargs).item()
+        return loss_func(pred, y, loss_kwargs).item()
 
 
 def train_integration(
