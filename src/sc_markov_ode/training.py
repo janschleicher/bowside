@@ -387,7 +387,9 @@ def train_integration(
     log.info(f"Using model of type {model.__class__.__name__}")
 
     # Select GPU if available
-    device = torch.accelerator.current_accelerator()
+    device = None
+    if torch.accelerator.is_available():
+        device = torch.accelerator.current_accelerator()
     if not device:
         device = torch.device("cpu")
     model = model.to(device)

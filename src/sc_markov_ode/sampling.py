@@ -206,7 +206,9 @@ class MarkovSampler:
             Cell sequences of shape (num_chains, max_iter).
         """
         # Select device
-        device = torch.accelerator.current_accelerator()
+        device = None
+        if torch.accelerator.is_available():
+            device = torch.accelerator.current_accelerator()
         if not device:
             device = torch.device("cpu")
         log.info(f"Using {device.type} device.")
