@@ -245,7 +245,7 @@ class MarkovSampler:
             prev_states = state_indices[:, step - 1]
             probs = tpm_cumsum[prev_states]
             state_indices[:, step] = torch.searchsorted(
-                probs, random_steps[:, step - 1].unsqueeze(1), side="right"
+                probs, random_steps[:, step - 1].unsqueeze(1).contiguous(), side="right"
             ).squeeze(1)
 
         return state_indices.detach()
