@@ -64,6 +64,9 @@ def test_train_integration(
     dt = 0.1
     atol = 0.1
     rtol = 0.1
+    solver_method = None
+    if model_type == "ode" and batch_size:
+        solver_method = "adaptive_heun"
     loss_metric = torch.nn.functional.mse_loss
 
     # Select GPU if available
@@ -90,7 +93,15 @@ def test_train_integration(
     adj_pre = model.adj.clone().detach()
 
     y = dataset[:].to(device)
-    y_pred = integrate_model(y[0, :, :], y.shape[0], model, dt=dt, atol=atol, rtol=rtol)
+    y_pred = integrate_model(
+        y[0, :, :],
+        y.shape[0],
+        model,
+        solver_method=solver_method,
+        dt=dt,
+        atol=atol,
+        rtol=rtol,
+    )
     untrained_loss = qqloss(y_pred, y, dim=1, metric=loss_metric)
 
     optim = torch.optim.Adam(model.parameters())
@@ -101,13 +112,22 @@ def test_train_integration(
         qqloss,
         batch_size=batch_size,
         num_epochs=5 if not batch_size else 2,
+        solver_method=solver_method,
         dt=dt,
         atol=atol,
         rtol=rtol,
         loss_kwargs={"metric": loss_metric, "dim": 1},
     )
 
-    y_pred = integrate_model(y[0, :, :], y.shape[0], model, dt=dt, atol=atol, rtol=rtol)
+    y_pred = integrate_model(
+        y[0, :, :],
+        y.shape[0],
+        model,
+        solver_method=solver_method,
+        dt=dt,
+        atol=atol,
+        rtol=rtol,
+    )
     trained_loss = qqloss(y_pred, y, dim=1, metric=loss_metric)
 
     # Weak checks that training did something
