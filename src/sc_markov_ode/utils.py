@@ -37,7 +37,7 @@ def check_transition_matrix(
     if recompute_matrix:
         compute_matrix = True
     if tpm_key not in adata.obsp.keys():
-        if tpm_key in adata.uns_keys():
+        if tpm_key in adata.uns:
             adata.obsp[tpm_key] = adata.uns[tpm_key]
         else:
             log.warning(

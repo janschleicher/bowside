@@ -7,6 +7,7 @@ import anndata as ad
 import numpy as np
 import torch
 from tqdm.auto import tqdm
+from tqdm.contrib.logging import logging_redirect_tqdm
 
 from sc_markov_ode.utils import check_transition_matrix
 
@@ -235,17 +236,20 @@ class MarkovSampler:
         ).to(device)
 
         # Sample cell sequences
-        for step in tqdm(
-            range(1, max_iter),
-            desc="Sampling cell sequences",
-            initial=1,
-            total=max_iter,
-            unit=" steps",
-        ):
-            prev_states = state_indices[:, step - 1]
-            probs = tpm_cumsum[prev_states]
-            state_indices[:, step] = torch.searchsorted(
-                probs, random_steps[:, step - 1].unsqueeze(1).contiguous(), side="right"
-            ).squeeze(1)
+        with logging_redirect_tqdm():
+            for step in tqdm(
+                range(1, max_iter),
+                desc="Sampling cell sequences",
+                initial=1,
+                total=max_iter,
+                unit=" steps",
+            ):
+                prev_states = state_indices[:, step - 1]
+                probs = tpm_cumsum[prev_states]
+                state_indices[:, step] = torch.searchsorted(
+                    probs,
+                    random_steps[:, step - 1].unsqueeze(1).contiguous(),
+                    side="right",
+                ).squeeze(1)
 
-        return state_indices.detach()
+            return state_indices.detach()

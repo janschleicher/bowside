@@ -3,12 +3,15 @@
 import logging
 from collections.abc import Callable
 from functools import partial
+from math import floor
 from pathlib import Path
 from typing import Any, List, Optional, Protocol, Tuple, Union
 
 import torch
 from torchdiffeq import odeint, odeint_adjoint
 from torchsde import sdeint, sdeint_adjoint
+from tqdm.auto import tqdm
+from tqdm.contrib.logging import logging_redirect_tqdm
 
 from sc_markov_ode.dataset import MarkovChainDataset
 from sc_markov_ode.model import GRNModel, GRNModelSDE
@@ -368,6 +371,8 @@ def train_integration(
                 f"Argument `checkpoint` must be smaller than `num_epochs`. "
                 f"Got checkpoint={checkpoint}, num_epochs={num_epochs}."
             )
+        else:
+            log.info(f"Saving checkpoints every {checkpoint} epochs.")
 
     if checkpoint_dir is None:
         checkpoint_dir = Path("./checkpoints")
@@ -379,14 +384,18 @@ def train_integration(
             f"but got {type(checkpoint_dir)}"
         )
 
+    log.info(f"Using model of type {model.__class__.__name__}")
+
     # Select GPU if available
     device = torch.accelerator.current_accelerator()
     if not device:
         device = torch.device("cpu")
     model = model.to(device)
+    log.info(f"Running on device '{device}'")
 
+    train_length = floor(len(dataset) * train_proportion)
     trainset, testset = torch.utils.data.random_split(
-        dataset, [train_proportion, 1.0 - train_proportion]
+        dataset, [train_length, len(dataset) - train_length]
     )
 
     # No batch size given: Use the whole dataset
@@ -396,6 +405,9 @@ def train_integration(
     else:
         batch_size_train = len(trainset)
         batch_size_test = len(testset)
+    log.info(
+        f"Batch size train: {batch_size_train}; batch size test: {batch_size_test}"
+    )
 
     trainloader = torch.utils.data.DataLoader(
         trainset,
@@ -415,59 +427,69 @@ def train_integration(
     num_batches_test = len(testloader)
     train_losses: List[float] = []
     test_losses: List[float] = []
+    log.info(
+        f"Number of training batches: {num_batches_train}; number of test batches: {num_batches_test}"
+    )
 
-    for epoch in range(num_epochs):
-        # Training
-        train_loss = 0.0
-        for data in trainloader:
-            y = data.to(device)
-            train_loss += train_step_integration(
-                y=y,
-                model=model,
-                optimizer=optimizer,
-                loss_func=loss_func,
-                adjoint=adjoint,
-                solver_method=solver_method,
-                dt=dt,
-                atol=atol,
-                rtol=rtol,
-                adjoint_atol=adjoint_atol,
-                adjoint_rtol=adjoint_rtol,
-                loss_kwargs=loss_kwargs,
-            )
-        train_loss = train_loss / num_batches_train
-        train_losses.append(train_loss)
+    log.info("Starting GRN model training.")
 
-        # Evaluation
-        test_loss = 0.0
-        for data in testloader:
-            y = data.to(device)
-            test_loss += test(
-                y=y,
-                model=model,
-                loss_func=loss_func,
-                solver_method=solver_method,
-                dt=dt,
-                atol=atol,
-                rtol=rtol,
-                loss_kwargs=loss_kwargs,
-            )
-        test_loss = test_loss / num_batches_test
-        test_losses.append(test_loss)
+    with logging_redirect_tqdm():
+        for epoch in tqdm(range(num_epochs), desc="Training", unit="epoch"):
+            # Training
+            train_loss = 0.0
+            for data in trainloader:
+                y = data.to(device)
+                train_loss += train_step_integration(
+                    y=y,
+                    model=model,
+                    optimizer=optimizer,
+                    loss_func=loss_func,
+                    adjoint=adjoint,
+                    solver_method=solver_method,
+                    dt=dt,
+                    atol=atol,
+                    rtol=rtol,
+                    adjoint_atol=adjoint_atol,
+                    adjoint_rtol=adjoint_rtol,
+                    loss_kwargs=loss_kwargs,
+                )
+            train_loss = train_loss / num_batches_train
+            train_losses.append(train_loss)
 
-        log.info(f"Epoch {epoch}: training loss: {train_loss}, test loss: {test_loss}")
+            # Evaluation
+            test_loss = 0.0
+            for data in testloader:
+                y = data.to(device)
+                test_loss += test(
+                    y=y,
+                    model=model,
+                    loss_func=loss_func,
+                    solver_method=solver_method,
+                    dt=dt,
+                    atol=atol,
+                    rtol=rtol,
+                    loss_kwargs=loss_kwargs,
+                )
+            test_loss = test_loss / num_batches_test
+            test_losses.append(test_loss)
 
-        # Save checkpoint
-        if checkpoint is not None and epoch % checkpoint == 0:
-            torch.save(
-                {
-                    "epoch": epoch,
-                    "model_state_dict": model.state_dict(),
-                    "optimizer_state_dict": optimizer.state_dict(),
-                    "train_loss": train_loss,
-                    "test_loss": test_loss,
-                },
-                checkpoint_dir / f"checkpoint_e{epoch:4d}.tar",
+            log.info(
+                f"Epoch {epoch}: training loss: {train_loss}, test loss: {test_loss}"
             )
 
-    return train_losses, test_losses
+            # Save checkpoint
+            if checkpoint is not None and epoch % checkpoint == 0:
+                torch.save(
+                    {
+                        "epoch": epoch,
+                        "model_state_dict": model.state_dict(),
+                        "optimizer_state_dict": optimizer.state_dict(),
+                        "train_loss": train_loss,
+                        "test_loss": test_loss,
+                    },
+                    checkpoint_dir / f"checkpoint_e{epoch:4d}.tar",
+                )
+
+        log.info("Finished model training.")
+
+        return train_losses, test_losses
