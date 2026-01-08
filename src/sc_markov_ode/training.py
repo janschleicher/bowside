@@ -137,7 +137,7 @@ def integrate_model(
     pred = int_func(
         model,
         y0,
-        torch.linspace(0, n_steps - 1, n_steps, dtype=torch.float32),
+        torch.linspace(0, n_steps - 1, n_steps, dtype=torch.float32, device=y0.device),
         method=solver_method,
         atol=atol,
         rtol=rtol,
@@ -277,7 +277,7 @@ def test(
             atol=atol,
             rtol=rtol,
         )
-        return loss_func(pred, y, loss_kwargs).item()
+        return loss_func(pred, y, **loss_kwargs).item()
 
 
 def train_integration(
