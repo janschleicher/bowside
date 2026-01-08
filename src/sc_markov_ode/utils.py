@@ -3,7 +3,6 @@ import logging
 import anndata as ad
 import numpy as np
 import scvelo as scv
-from scipy.sparse import csr_array, issparse, spmatrix
 
 log = logging.getLogger(__name__)
 
@@ -38,7 +37,7 @@ def check_transition_matrix(
     if recompute_matrix:
         compute_matrix = True
     if tpm_key not in adata.obsp.keys():
-        if tpm_key in adata.uns_keys():
+        if tpm_key in adata.uns:
             adata.obsp[tpm_key] = adata.uns[tpm_key]
         else:
             log.warning(
@@ -57,14 +56,12 @@ def check_transition_matrix(
     if compute_matrix:
         adata.obsp[tpm_key] = scv.utils.get_transition_matrix(
             adata=adata, self_transitions=self_transitions
-        )
+        ).toarray()
 
     if compute_terminal_states:
         scv.tl.terminal_states(adata, self_transitions=self_transitions)
 
-    # Make matrix sparse and check row sums
-    if not issparse(adata.obsp[tpm_key]) or isinstance(adata.obsp[tpm_key], spmatrix):
-        adata.obsp[tpm_key] = csr_array(adata.obsp[tpm_key])
+    # Check row sums
     assert np.allclose(adata.obsp[tpm_key].sum(axis=1), 1.0), (
         "The rows of the transition probability matrix do not sum to 1."
     )

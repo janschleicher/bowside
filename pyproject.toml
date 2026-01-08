@@ -1,9 +1,9 @@
 [build-system]
 requires = [
-    "setuptools>=74.1",
-    "setuptools-scm>=8",
+    "hatchling",
+    "hatch-vcs",
 ]
-build-backend = "setuptools.build_meta"
+build-backend = "hatchling.build"
 
 [project]
 name = "sc_markov_ode"
@@ -15,7 +15,7 @@ requires-python = ">=3.10"
 
 authors = [
     { email = "jan.schleicher@uni-tuebingen.de" },
-    { name = "Jan Schleicher" },
+    { name = "Jan T. Schleicher" },
 ]
 
 keywords = ["scRNA-seq", "ODE", "GRN", "dynamics"]
@@ -33,6 +33,7 @@ classifiers = [
 ]
 
 dependencies = [
+    "tqdm",
     "numpy",
     "pandas",
     "matplotlib",
@@ -41,6 +42,8 @@ dependencies = [
     "scanpy>=1.10",
     "scvelo",
     "torch",
+    "torchdiffeq",
+    "torchsde",
 ]
 
 [project.urls]
@@ -55,8 +58,6 @@ doc = [
     "sphinx-autoapi",
     "scanpydoc",
 ]
-
-[tool.setuptools_scm]
 
 [tool.ruff]
 # Exclude a variety of commonly ignored directories.
@@ -120,14 +121,15 @@ line-ending = "auto"
 # reStructuredText code/literal blocks and doctests are all supported.
 docstring-code-format = true
 
-#SOURCE: https://stackoverflow.com/a/76739181
-[tool.setuptools.packages.find]
-where = ["."] # list of folders that contain the packages (["."] by default)
-include = [
-    "sc_markov_ode",
-] # package names should match these glob patterns (["*"] by default)
-exclude = [] # exclude packages matching these glob patterns (empty by default)
-namespaces = false # to disable scanning PEP 420 namespaces (true by default)
+[tool.hatch.build.targets.wheel]
+packages = ["src/sc_markov_ode"]
+[tool.hatch.version]
+source = "vcs"
 
 [tool.coverage.run]
 omit = ["*/tests/*"]
+
+[tool.pytest.ini_options]
+addopts = [
+    "--import-mode=importlib",
+]

@@ -5,10 +5,9 @@ import numpy as np
 import pytest
 import scanpy as sc
 import scvelo as scv
-from scipy.sparse import sparray
 
-from sc_markov_ode.tests.conftest import TEST_DATA_PATH
 from sc_markov_ode.utils import check_transition_matrix
+from tests.conftest import TEST_DATA_PATH
 
 
 @pytest.mark.parametrize(
@@ -26,9 +25,9 @@ def test_check_tpm(
     adata = sc.read_h5ad(TEST_DATA_PATH)
     tpm_key = "T_forward"
     if tpm_location == "obsp":
-        adata.obsp[tpm_key] = scv.utils.get_transition_matrix(adata)
+        adata.obsp[tpm_key] = scv.utils.get_transition_matrix(adata).toarray()
     elif tpm_location == "uns":
-        adata.uns[tpm_key] = scv.utils.get_transition_matrix(adata)
+        adata.uns[tpm_key] = scv.utils.get_transition_matrix(adata).toarray()
 
     if terminal_states_present and tpm_location is not None:
         scv.tl.terminal_states(adata)
@@ -46,8 +45,8 @@ def test_check_tpm(
     assert tpm_key in adata.obsp.keys(), (
         "Transition probability matrix not present after check."
     )
-    assert isinstance(adata.obsp[tpm_key], sparray), (
-        "Transition probability matrix not sparse array after check."
+    assert isinstance(adata.obsp[tpm_key], np.ndarray), (
+        "Transition probability matrix must be numpy array."
     )
     assert np.allclose(adata.obsp[tpm_key].sum(axis=1), 1.0), (
         "Rows of the transition probability matrix do not sum to 1 after check."
