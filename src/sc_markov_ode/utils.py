@@ -3,6 +3,7 @@ import logging
 import anndata as ad
 import numpy as np
 import scvelo as scv
+from scipy.sparse import csc_array, csc_matrix, csr_array, csr_matrix
 
 log = logging.getLogger(__name__)
 
@@ -65,3 +66,8 @@ def check_transition_matrix(
     assert np.allclose(adata.obsp[tpm_key].sum(axis=1), 1.0), (
         "The rows of the transition probability matrix do not sum to 1."
     )
+
+    # Change TPM to numpy array if necessary
+    tpm = adata.obsp[tpm_key]
+    if isinstance(tpm, (csc_array, csr_array, csc_matrix, csr_matrix)):
+        adata.obsp[tpm_key] = tpm.toarray()

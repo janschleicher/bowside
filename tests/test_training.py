@@ -67,10 +67,14 @@ def test_train_integration(
     solver_method = None
     if model_type == "ode" and batch_size:
         solver_method = "adaptive_heun"
+    elif model_type == "sde":
+        solver_method = "milstein"
     loss_metric = torch.nn.functional.mse_loss
 
     # Select GPU if available
-    device = torch.accelerator.current_accelerator()
+    device = None
+    if torch.accelerator.is_available():
+        device = torch.accelerator.current_accelerator()
     if not device:
         device = torch.device("cpu")
 
@@ -94,15 +98,15 @@ def test_train_integration(
 
     y = dataset[:].to(device)
     y_pred = integrate_model(
-        y[0, :, :],
-        y.shape[0],
+        y[:, 0, :],
+        y.shape[1],
         model,
         solver_method=solver_method,
         dt=dt,
         atol=atol,
         rtol=rtol,
     )
-    untrained_loss = qqloss(y_pred, y, dim=1, metric=loss_metric)
+    untrained_loss = qqloss(y_pred, y.permute(1, 0, 2), dim=1, metric=loss_metric)
 
     optim = torch.optim.Adam(model.parameters())
     _, _ = train_integration(
@@ -120,15 +124,15 @@ def test_train_integration(
     )
 
     y_pred = integrate_model(
-        y[0, :, :],
-        y.shape[0],
+        y[:, 1, :],
+        y.shape[1],
         model,
         solver_method=solver_method,
         dt=dt,
         atol=atol,
         rtol=rtol,
     )
-    trained_loss = qqloss(y_pred, y, dim=1, metric=loss_metric)
+    trained_loss = qqloss(y_pred, y.permute(1, 0, 2), dim=1, metric=loss_metric)
 
     # Weak checks that training did something
     assert trained_loss <= untrained_loss, (

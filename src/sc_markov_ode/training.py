@@ -3,7 +3,7 @@
 import logging
 from collections.abc import Callable
 from functools import partial
-from math import floor
+from math import floor, log10
 from pathlib import Path
 from typing import Any, List, Optional, Protocol, Tuple, Union
 
@@ -208,8 +208,8 @@ def train_step_integration(
     """
     model.train()
     pred = integrate_model(
-        y0=y[0, :, :],
-        n_steps=y.shape[0],
+        y0=y[:, 0, :],
+        n_steps=y.shape[1],
         model=model,
         adjoint=adjoint,
         solver_method=solver_method,
@@ -221,7 +221,7 @@ def train_step_integration(
     )
 
     # Backpropagation
-    loss = loss_func(pred, y, **loss_kwargs)
+    loss = loss_func(pred, y.permute(1, 0, 2), **loss_kwargs)
     loss.backward()
     optimizer.step()
     optimizer.zero_grad()
@@ -271,8 +271,8 @@ def test(
     model.eval()
     with torch.no_grad():
         pred = integrate_model(
-            y0=y[0, :, :],
-            n_steps=y.shape[0],
+            y0=y[:, 0, :],
+            n_steps=y.shape[1],
             model=model,
             adjoint=False,
             solver_method=solver_method,
@@ -280,7 +280,7 @@ def test(
             atol=atol,
             rtol=rtol,
         )
-        return loss_func(pred, y, **loss_kwargs).item()
+        return loss_func(pred, y.permute(1, 0, 2), **loss_kwargs).item()
 
 
 def train_integration(
@@ -361,6 +361,16 @@ def train_integration(
     ValueError
         An error is raised if `checkpoint` is larger than `num_epochs`.
     """
+    if checkpoint_dir is None:
+        checkpoint_dir = Path("./checkpoints")
+    elif isinstance(checkpoint_dir, str):
+        checkpoint_dir = Path(checkpoint_dir)
+    elif not isinstance(checkpoint_dir, Path):
+        raise TypeError(
+            f"Argument `checkpoint_dir` must be of type str or Path, "
+            f"but got {type(checkpoint_dir)}"
+        )
+
     if checkpoint is not None:
         if not isinstance(checkpoint, int):
             raise TypeError(
@@ -372,17 +382,10 @@ def train_integration(
                 f"Got checkpoint={checkpoint}, num_epochs={num_epochs}."
             )
         else:
-            log.info(f"Saving checkpoints every {checkpoint} epochs.")
-
-    if checkpoint_dir is None:
-        checkpoint_dir = Path("./checkpoints")
-    elif isinstance(checkpoint_dir, str):
-        checkpoint_dir = Path(checkpoint_dir)
-    elif not isinstance(checkpoint_dir, Path):
-        raise TypeError(
-            f"Argument `checkpoint_dir` must be of type str or Path, "
-            f"but got {type(checkpoint_dir)}"
-        )
+            checkpoint_dir.mkdir(parents=True, exist_ok=True)
+            log.info(
+                f"Saving checkpoints every {checkpoint} epochs to directory {checkpoint_dir}."
+            )
 
     log.info(f"Using model of type {model.__class__.__name__}")
 
@@ -401,7 +404,7 @@ def train_integration(
     )
 
     # No batch size given: Use the whole dataset
-    if batch_size:
+    if batch_size is not None:
         batch_size_train = batch_size
         batch_size_test = batch_size
     else:
@@ -475,7 +478,7 @@ def train_integration(
             test_loss = test_loss / num_batches_test
             test_losses.append(test_loss)
 
-            log.info(
+            log.debug(
                 f"Epoch {epoch}: training loss: {train_loss}, test loss: {test_loss}"
             )
 
@@ -489,9 +492,22 @@ def train_integration(
                         "train_loss": train_loss,
                         "test_loss": test_loss,
                     },
-                    checkpoint_dir / f"checkpoint_e{epoch:4d}.tar",
+                    checkpoint_dir
+                    / f"checkpoint_e{epoch:0{floor(log10(num_epochs)) + 1}d}.tar",
                 )
 
         log.info("Finished model training.")
+
+        # Save final model
+        if checkpoint is not None:
+            torch.save(
+                {
+                    "model_state_dict": model.state_dict(),
+                    "optimizer_state_dict": optimizer.state_dict(),
+                    "train_loss": train_loss,
+                    "test_loss": test_loss,
+                },
+                checkpoint_dir / "checkpoint_final_model.tar",
+            )
 
         return train_losses, test_losses
