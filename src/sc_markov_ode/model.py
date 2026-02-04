@@ -75,7 +75,7 @@ class GRNModel(torch.nn.Module):
         torch.nn.init.normal_(self.log_bias, mean=0, std=0.01)
         self.log_bias = torch.nn.Parameter(self.log_bias)
         self.log_decay_rate = torch.empty(n_genes)
-        torch.nn.init.normal_(self.log_decay_rate, mean=0, std=1)
+        torch.nn.init.normal_(self.log_decay_rate, mean=0, std=0.01)
         self.log_decay_rate = torch.nn.Parameter(self.log_decay_rate)
 
         match activation:
