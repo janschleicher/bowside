@@ -291,6 +291,7 @@ def train_integration(
     train_proportion: float = 0.8,
     batch_size: Optional[int] = None,
     num_epochs: int = 1000,
+    use_accelerator: bool = True,
     adjoint: bool = False,
     solver_method: Optional[str] = None,
     dt: float = 0.001,
@@ -322,6 +323,9 @@ def train_integration(
         Batch size. With the default None, all samples are used at once.
     num_epochs : int, optional
         Number of training epochs. By default 1000.
+    use_accelerator : bool, optional
+        Whether to use an accelerator (CUDA or MPS) if it is available.
+        By default True.
     adjoint : bool, optional
         Whether to use the adjoint method. By default False.
     solver_method : Optional[str], optional
@@ -391,9 +395,9 @@ def train_integration(
 
     # Select GPU if available
     device = None
-    if torch.accelerator.is_available():
+    if use_accelerator and torch.accelerator.is_available():
         device = torch.accelerator.current_accelerator()
-    if not device:
+    if device is None:
         device = torch.device("cpu")
     model = model.to(device)
     log.info(f"Running on device '{device}'")
