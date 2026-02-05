@@ -88,22 +88,22 @@ def integrate_model(
     model : GRNModel
         The gene regulatory network model.
     adjoint : bool, optional
-        Whether to use the adjoint method. By default False.
+        Whether to use the adjoint method. Default: False.
     solver_method : Optional[str], optional
         Numerical solver to use. With the default None, a suitable method
         is chosen depending on the mode type.
     dt : float, optional
-        The step size for the solver. Only used for SDEs. By default 0.001.
+        The step size for the solver. Only used for SDEs. Default: 0.001.
     atol : float, optional
-        Absolute tolerance. By default 1e-4.
+        Absolute tolerance. Default: 1e-4.
     rtol : float, optional
-        Relative tolerance. By default 1e-5.
+        Relative tolerance. Default: 1e-5.
     adjoint_atol : float, optional
         Absolute tolerance for backward adjoint solve. Only used when
-        `adjoint=True`. By default 1e-4.
+        `adjoint=True`. Default: 1e-4.
     adjoint_rtol : float, optional
         Relative tolerance for backward adjoint solve. Only used when
-        `adjoint=True`. By default 1e-5.
+        `adjoint=True`. Default: 1e-5.
 
     Returns
     -------
@@ -182,24 +182,24 @@ def train_step_integration(
     loss_func : LossFunction
         Loss function to optimize.
     adjoint : bool, optional
-        Whether to use the adjoint method. By default False.
+        Whether to use the adjoint method. Default: False.
     solver_method : Optional[str], optional
         Numerical solver to use. With the default None, a suitable method
         is chosen depending on the mode type.
     dt : float, optional
-        The step size for the solver. Only used for SDEs. By default 0.001.
+        The step size for the solver. Only used for SDEs. Default: 0.001.
     atol : float, optional
-        Absolute tolerance. By default 1e-4.
+        Absolute tolerance. Default: 1e-4.
     rtol : float, optional
-        Relative tolerance. By default 1e-5.
+        Relative tolerance. Default: 1e-5.
     adjoint_atol : float, optional
         Absolute tolerance for backward adjoint solve. Only used when
-        `adjoint=True`. By default 1e-4.
+        `adjoint=True`. Default: 1e-4.
     adjoint_rtol : float, optional
         Relative tolerance for backward adjoint solve. Only used when
-        `adjoint=True`. By default 1e-5.
+        `adjoint=True`. Default: 1e-5.
     loss_kwargs : dict, optional
-        Additional keyword arguments for the loss function. By default {}.
+        Additional keyword arguments for the loss function. Default: {}.
 
     Returns
     -------
@@ -255,13 +255,13 @@ def test(
         Numerical solver to use. With the default None, a suitable method
         is chosen depending on the mode type.
     dt : float, optional
-        The step size for the solver. Only used for SDEs. By default 0.001.
+        The step size for the solver. Only used for SDEs. Default: 0.001.
     atol : float, optional
-        Absolute tolerance. By default 1e-4.
+        Absolute tolerance. Default: 1e-4.
     rtol : float, optional
-        Relative tolerance. By default 1e-5.
+        Relative tolerance. Default: 1e-5.
     loss_kwargs : dict, optional
-        Additional keyword arguments for the loss function. By default {}.
+        Additional keyword arguments for the loss function. Default: {}.
 
     Returns
     -------
@@ -318,33 +318,33 @@ def train_integration(
     loss_func : LossFunction
         Loss function to optimize.
     train_proportion : float, optional
-        Proportion of samples to use for training. By default 0.8.
+        Proportion of samples to use for training. Default: 0.8.
     batch_size : Optional[int], optional
         Batch size. With the default None, all samples are used at once.
     num_epochs : int, optional
-        Number of training epochs. By default 1000.
+        Number of training epochs. Default: 1000.
     use_accelerator : bool, optional
         Whether to use an accelerator (CUDA or MPS) if it is available.
-        By default True.
+        Default: True.
     adjoint : bool, optional
-        Whether to use the adjoint method. By default False.
+        Whether to use the adjoint method. Default: False.
     solver_method : Optional[str], optional
         Numerical solver to use. With the default None, a suitable method
         is chosen depending on the mode type.
     dt : float, optional
-        The step size for the solver. Only used for SDEs. By default 0.001.
+        The step size for the solver. Only used for SDEs. Default: 0.001.
     atol : float, optional
-        Absolute tolerance. By default 1e-4.
+        Absolute tolerance. Default: 1e-4.
     rtol : float, optional
-        Relative tolerance. By default 1e-5.
+        Relative tolerance. Default: 1e-5.
     adjoint_atol : float, optional
         Absolute tolerance for backward adjoint solve. Only used when
-        `adjoint=True`. By default 1e-4.
+        `adjoint=True`. Default: 1e-4.
     adjoint_rtol : float, optional
         Relative tolerance for backward adjoint solve. Only used when
-        `adjoint=True`. By default 1e-5.
+        `adjoint=True`. Default: 1e-5.
     loss_kwargs : dict, optional
-        Additional keyword arguments for the loss function. By default {}.
+        Additional keyword arguments for the loss function. Default: {}.
     num_workers_loader : int, optional
         Number of subprocesses to use for data loading. With the default,
         0, data is loaded in the main process.
