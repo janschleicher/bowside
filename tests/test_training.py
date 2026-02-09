@@ -99,8 +99,8 @@ def test_train_integration(
     y = dataset[:].to(device)
     y_pred = integrate_model(
         y[:, 0, :],
-        y.shape[1],
         model,
+        n_steps=y.shape[1],
         solver_method=solver_method,
         dt=dt,
         atol=atol,
@@ -125,8 +125,8 @@ def test_train_integration(
 
     y_pred = integrate_model(
         y[:, 1, :],
-        y.shape[1],
         model,
+        n_steps=y.shape[1],
         solver_method=solver_method,
         dt=dt,
         atol=atol,

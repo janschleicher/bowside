@@ -13,7 +13,7 @@ from torchsde import sdeint, sdeint_adjoint
 from tqdm.auto import tqdm
 from tqdm.contrib.logging import logging_redirect_tqdm
 
-from sc_markov_ode.dataset import MarkovChainDataset
+from sc_markov_ode.dataset import MarkovChainDataset, PseudotimeDataset
 from sc_markov_ode.model import GRNModel, GRNModelSDE
 
 log = logging.getLogger(__name__)
@@ -66,8 +66,9 @@ class LossFunction(Protocol):
 
 def integrate_model(
     y0: torch.Tensor,
-    n_steps: int,
     model: GRNModel,
+    n_steps: Optional[int] = None,
+    time_points: Optional[torch.Tensor] = None,
     adjoint: bool = False,
     solver_method: Optional[str] = None,
     dt: float = 0.001,
@@ -83,10 +84,16 @@ def integrate_model(
     ----------
     y0 : torch.Tensor
         Initial state of the differential equation of shape (batch_size, n_var).
-    n_steps : int
-        Number of steps to integrate.
     model : GRNModel
         The gene regulatory network model.
+    n_steps : Optional[int], optional
+        Number of steps to integrate. Mutually exclusive with
+        `time_points`. Using this option will generate `n_steps` equally
+        spaced time points from 0 to `n_steps` - 1. Default: None.
+    time_points : Optional[torch.Tensor], optional
+        Time points to use for integration. Mutually exclusive with
+        `num_steps`. Allows explicitly specifying the time points.
+        Default: None.
     adjoint : bool, optional
         Whether to use the adjoint method. Default: False.
     solver_method : Optional[str], optional
@@ -136,11 +143,28 @@ def integrate_model(
     else:
         raise TypeError(f"Expected type GRNModel, but got {type(model)}.")
 
+    if n_steps is None:
+        if time_points is None:
+            raise ValueError(
+                "Arguments `n_steps` and `time_points` are both `None`. You must set one of them."
+            )
+        else:
+            ts = time_points.to(y0.device)
+    else:
+        if time_points is not None:
+            raise ValueError(
+                "Arguments `n_steps` and `time_points` are mutually exclusicve. Choose one."
+            )
+        else:
+            ts = torch.linspace(
+                0, n_steps - 1, n_steps, dtype=torch.float32, device=y0.device
+            )
+
     # Integrate and compute loss
     pred = int_func(
         model,
         y0,
-        torch.linspace(0, n_steps - 1, n_steps, dtype=torch.float32, device=y0.device),
+        ts,
         method=solver_method,
         atol=atol,
         rtol=rtol,
@@ -157,6 +181,7 @@ def train_step_integration(
     model: GRNModel,
     optimizer: torch.optim.Optimizer,
     loss_func: LossFunction,
+    time_points: Optional[torch.Tensor] = None,
     adjoint: bool = False,
     solver_method: Optional[str] = None,
     dt: float = 0.001,
@@ -181,6 +206,9 @@ def train_step_integration(
         PyTorch optimizer for model training.
     loss_func : LossFunction
         Loss function to optimize.
+    time_points : Optional[torch.Tensor], optional
+        Time points to use for integration. Allows explicitly specifying
+        the time points. Default: None.
     adjoint : bool, optional
         Whether to use the adjoint method. Default: False.
     solver_method : Optional[str], optional
@@ -206,11 +234,16 @@ def train_step_integration(
     float
         Value of the training loss after the training step.
     """
+    n_steps = None
+    if time_points is None:
+        n_steps = y.shape[1]
+
     model.train()
     pred = integrate_model(
         y0=y[:, 0, :],
-        n_steps=y.shape[1],
         model=model,
+        n_steps=n_steps,
+        time_points=time_points,
         adjoint=adjoint,
         solver_method=solver_method,
         dt=dt,
@@ -233,6 +266,7 @@ def test(
     y: torch.Tensor,
     model: GRNModel,
     loss_func: LossFunction,
+    time_points: Optional[torch.Tensor] = None,
     solver_method: Optional[str] = None,
     dt: float = 0.001,
     atol: float = 1e-4,
@@ -251,6 +285,9 @@ def test(
         The gene regulatory network model.
     loss_func : LossFunction
         Loss function to optimize.
+    time_points : Optional[torch.Tensor], optional
+        Time points to use for integration. Allows explicitly specifying
+        the time points. Default: None.
     solver_method : Optional[str], optional
         Numerical solver to use. With the default None, a suitable method
         is chosen depending on the mode type.
@@ -268,12 +305,17 @@ def test(
     float
         Value of the test lost.
     """
+    n_steps = None
+    if time_points is None:
+        n_steps = y.shape[1]
+
     model.eval()
     with torch.no_grad():
         pred = integrate_model(
             y0=y[:, 0, :],
-            n_steps=y.shape[1],
             model=model,
+            n_steps=n_steps,
+            time_points=time_points,
             adjoint=False,
             solver_method=solver_method,
             dt=dt,
@@ -284,7 +326,7 @@ def test(
 
 
 def train_integration(
-    dataset: MarkovChainDataset,
+    dataset: Union[MarkovChainDataset, PseudotimeDataset],
     model: GRNModel,
     optimizer: torch.optim.Optimizer,
     loss_func: LossFunction,
@@ -309,7 +351,7 @@ def train_integration(
 
     Parameters
     ----------
-    dataset : MarkovChainDataset
+    dataset : Union[MarkovChainDataset, PseudotimeDataset]
         Dataset to use for training.
     model : GRNModel
         The gene regulatory network model.
@@ -402,6 +444,14 @@ def train_integration(
     model = model.to(device)
     log.info(f"Running on device '{device}'")
 
+    time_points = None
+    if isinstance(dataset, PseudotimeDataset):
+        time_points = dataset.time_points
+    elif not isinstance(dataset, MarkovChainDataset):
+        raise ValueError(
+            "Incompatible dataset type. Use `MarkovChainDataset` or `PseudotimeDataset`."
+        )
+
     train_length = floor(len(dataset) * train_proportion)
     trainset, testset = torch.utils.data.random_split(
         dataset, [train_length, len(dataset) - train_length]
@@ -453,6 +503,7 @@ def train_integration(
                     model=model,
                     optimizer=optimizer,
                     loss_func=loss_func,
+                    time_points=time_points,
                     adjoint=adjoint,
                     solver_method=solver_method,
                     dt=dt,
@@ -473,6 +524,7 @@ def train_integration(
                     y=y,
                     model=model,
                     loss_func=loss_func,
+                    time_points=time_points,
                     solver_method=solver_method,
                     dt=dt,
                     atol=atol,
