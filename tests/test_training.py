@@ -50,15 +50,23 @@ def test_qqloss(
 
 
 @pytest.mark.parametrize(
-    "model_type, batch_size, num_chains",
+    "model_type, batch_size, num_chains, shared_sigma, fixed_sigma, constant_noise",
     [
-        ["ode", None, 100],
-        ["ode", 100, 500],
-        ["sde", None, 100],
+        ["ode", None, 100, None, None, None],
+        ["ode", 100, 500, None, None, None],
+        ["sde", None, 100, True, True, True],
+        ["sde", None, 100, True, True, False],
+        ["sde", None, 100, True, False, True],
+        ["sde", None, 100, False, False, True],
     ],
 )
 def test_train_integration(
-    model_type: Literal["ode", "sde"], batch_size: int, num_chains: int
+    model_type: Literal["ode", "sde"],
+    batch_size: int,
+    num_chains: int,
+    shared_sigma: bool,
+    fixed_sigma: bool,
+    constant_noise: bool,
 ):
     torch.manual_seed(42)
     dt = 0.1
@@ -91,7 +99,12 @@ def test_train_integration(
         case "ode":
             model = GRNModel(n_genes=dataset.n_genes())
         case "sde":
-            model = GRNModelSDE(n_genes=dataset.n_genes())
+            model = GRNModelSDE(
+                n_genes=dataset.n_genes(),
+                shared_sigma=shared_sigma,
+                fixed_sigma=fixed_sigma,
+                constant_noise=constant_noise,
+            )
     model.to(device)
 
     adj_pre = model.adj.clone().detach()
