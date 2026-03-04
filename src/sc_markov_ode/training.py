@@ -5,7 +5,7 @@ from collections.abc import Callable
 from functools import partial
 from math import floor, log10
 from pathlib import Path
-from typing import Any, List, Optional, Protocol, Tuple, Union
+from typing import Any, List, Literal, Optional, Protocol, Tuple, Union
 
 import torch
 from torchdiffeq import odeint, odeint_adjoint
@@ -16,7 +16,9 @@ from tqdm.contrib.logging import logging_redirect_tqdm
 from sc_markov_ode.dataset import MarkovChainDataset, PseudotimeDataset
 from sc_markov_ode.model import GRNModel, GRNModelSDE
 
-log = logging.getLogger(__name__)
+
+class NaNTensorError(RuntimeError):
+    pass
 
 
 def qqloss(
@@ -252,9 +254,13 @@ def train_step_integration(
         adjoint_atol=adjoint_atol,
         adjoint_rtol=adjoint_rtol,
     )
+    if torch.any(pred.isnan()):
+        raise NaNTensorError("Numerical integration resulted in all NaN tensor.")
 
     # Backpropagation
-    loss = loss_func(pred, y.permute(1, 0, 2), **loss_kwargs)
+    loss = loss_func(pred.contiguous(), y.permute(1, 0, 2).contiguous(), **loss_kwargs)
+    if loss.dim() >= 1:
+        loss = loss.sum()
     loss.backward()
     optimizer.step()
     optimizer.zero_grad()
@@ -322,7 +328,16 @@ def test(
             atol=atol,
             rtol=rtol,
         )
-        return loss_func(pred, y.permute(1, 0, 2), **loss_kwargs).item()
+
+        if torch.any(pred.isnan()):
+            raise NaNTensorError("Numerical integration resulted in all NaN tensor.")
+
+        loss = loss_func(
+            pred.contiguous(), y.permute(1, 0, 2).contiguous(), **loss_kwargs
+        )
+        if loss.dim() >= 1:
+            loss = loss.sum()
+        return loss.item()
 
 
 def train_integration(
@@ -343,8 +358,9 @@ def train_integration(
     adjoint_rtol: float = 1e-5,
     loss_kwargs: dict = {},
     num_workers_loader: int = 0,
-    checkpoint: Optional[int] = None,
+    checkpoint: Optional[Union[int, Literal["final"]]] = None,
     checkpoint_dir: Optional[Union[str, Path]] = None,
+    logger: Optional[logging.Logger] = None,
 ) -> Tuple[List[float], List[float]]:
     """
     Train a gene regulatory network ODE/SDE model using integration.
@@ -390,8 +406,9 @@ def train_integration(
     num_workers_loader : int, optional
         Number of subprocesses to use for data loading. With the default,
         0, data is loaded in the main process.
-    checkpoint : int, optional
-        Save the model state every `checkpoint` epochs. The default None
+    checkpoint : Optional[Union[int, Literal["final"]]], optional
+        Save the model state every `checkpoint` epochs, or only save the
+        state of the final model with "final". The default None
         corresponds to not saving any checkpoints.
 
     Returns
@@ -407,6 +424,11 @@ def train_integration(
     ValueError
         An error is raised if `checkpoint` is larger than `num_epochs`.
     """
+    # Use logger passed to the function if applicable
+    if logger is not None:
+        log = logger
+    else:
+        log = logging.getLogger(__name__)
     if checkpoint_dir is None:
         checkpoint_dir = Path("./checkpoints")
     elif isinstance(checkpoint_dir, str):
@@ -419,9 +441,13 @@ def train_integration(
 
     if checkpoint is not None:
         if not isinstance(checkpoint, int):
-            raise TypeError(
-                f"Argument `checkpoint` must be of type int, but got {type(checkpoint)}."
-            )
+            if checkpoint == "final":
+                checkpoint_dir.mkdir(parents=True, exist_ok=True)
+                log.info(f"Saving final model state to directory {checkpoint_dir}.")
+            else:
+                raise TypeError(
+                    f"Argument `checkpoint` must be of type int or 'final', but got {type(checkpoint)}."
+                )
         elif checkpoint > num_epochs:
             raise ValueError(
                 f"Argument `checkpoint` must be smaller than `num_epochs`. "
@@ -539,7 +565,7 @@ def train_integration(
             )
 
             # Save checkpoint
-            if checkpoint is not None and epoch % checkpoint == 0:
+            if isinstance(checkpoint, int) and epoch % checkpoint == 0:
                 torch.save(
                     {
                         "epoch": epoch,
