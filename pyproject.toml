@@ -44,6 +44,7 @@ dependencies = [
     "torch",
     "torchdiffeq",
     "torchsde",
+    "geomloss",
 ]
 
 [project.urls]
@@ -58,6 +59,7 @@ doc = [
     "sphinx-autoapi",
     "scanpydoc",
 ]
+opt = ["optuna", "optuna-dashboard"]
 
 [tool.ruff]
 # Exclude a variety of commonly ignored directories.
