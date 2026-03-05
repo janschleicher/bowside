@@ -1,5 +1,6 @@
 """Module for training of dynamic GRN model."""
 
+import inspect
 import logging
 from collections.abc import Callable
 from functools import partial
@@ -8,6 +9,7 @@ from pathlib import Path
 from typing import Any, List, Literal, Optional, Protocol, Tuple, Union
 
 import torch
+from geomloss import SamplesLoss
 from torchdiffeq import odeint, odeint_adjoint
 from torchsde import sdeint, sdeint_adjoint
 from tqdm.auto import tqdm
@@ -29,6 +31,7 @@ def qqloss(
     metric: Callable[
         [torch.Tensor, torch.Tensor], torch.Tensor
     ] = torch.nn.functional.mse_loss,
+    weight: Optional[torch.Tensor] = None,
 ) -> torch.Tensor:
     """
     Compute the difference between the quantiles of two tensors along a
@@ -47,6 +50,9 @@ def qqloss(
     metric : Callable, optional
         Metric for comparing the quantiles. Default:
         `torch.nn.functional.mse_loss`.
+    weight : Optional[torch.Tensor], optional
+        Weights for each sample. Only used when `metric` supports this.
+        Default: None.
 
     Returns
     -------
@@ -54,10 +60,78 @@ def qqloss(
         Difference between quantiles.
     """
     quantiles = torch.linspace(0, 1, n_quantiles + 1, device=y_true.device)
+    signature = inspect.signature(metric)
+    has_weight = any(param.name == "weight" for param in signature.parameters.values())
+    if has_weight:
+        if weight is not None:
+            weight = weight.to(y_true.device)
+        metric = partial(metric, weight=weight)  # type: ignore
     return metric(
         torch.quantile(y_pred, quantiles, dim=dim),
         torch.quantile(y_true, quantiles, dim=dim),
     )
+
+
+def sinkhorn_loss(
+    y_pred: torch.Tensor,
+    y_true: torch.Tensor,
+    backend: Literal["auto", "tensorized", "online", "multiscale"] = "auto",
+    p: int = 2,
+    blur: float = 0.1,
+    scaling: float = 0.7,
+    debias: bool = True,
+    weight: Optional[torch.Tensor] = None,
+) -> torch.Tensor:
+    """
+    Compute the Sinkhorn divergence between two tensors.
+
+    Parameters
+    ----------
+    y_pred : torch.Tensor
+        Predicted values.
+    y_true : torch.Tensor
+        True values.
+    backend : Literal["auto", "tensorized", "online", "multiscale"], optional
+        The implementation that will be used in the background.
+        Default: "auto". Supported values:
+        - "auto": Choose backend automatically.
+        - "tensorized": Computes on a full cost/kernel matrix once and
+            and stores it on the device memory.
+        - "online": Computes cost/kernel values on-the-fly.
+        - "multiscale": Fast implementation that scales to millions of samples.
+    p : int, optional
+        Specifies the ground cost function between points. Default: 2.
+        Supported values:
+        - p=1: Euclidean distance.
+        - p=2: Squared Euclidean distance.
+    blur : float, optional
+        Scale associated with the temperature. Default: 0.1.
+    scaling : float, optional
+        Ratio of between successive values in the scaling descent. Default: 0.7.
+    debias : bool, optional
+        Compute unbiased Sinkhorn divergence. Default: True.
+    weight : Optional[torch.Tensor], optional
+        Weights for each sample. Default: None.
+
+    Returns
+    -------
+    torch.Tensor
+        Average Sinkhorn divergence across samples.
+    """
+    loss_fn: Callable[[torch.Tensor, torch.Tensor], torch.Tensor] = SamplesLoss(
+        loss="sinkhorn",
+        backend=backend,
+        p=p,
+        blur=blur,
+        scaling=scaling,
+        debias=debias,
+    )
+    loss = loss_fn(y_pred, y_true)
+    if weight is None:
+        return loss.mean()
+    else:
+        weight = weight.to(y_true.device)
+        return (loss @ weight) / weight.sum()
 
 
 class LossFunction(Protocol):
