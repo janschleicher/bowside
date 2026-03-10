@@ -1,6 +1,7 @@
 import argparse
 import logging
 from functools import partial
+from multiprocessing import Pool
 from pathlib import Path
 
 import networkx as nx
@@ -9,7 +10,8 @@ import optuna
 import pandas as pd
 import scanpy as sc
 import torch
-from joblib import parallel_backend
+from optuna.storages import JournalStorage
+from optuna.storages.journal import JournalFileBackend
 
 from sc_markov_ode.dataset import PseudotimeDataset
 from sc_markov_ode.model import GRNModelSDE
@@ -134,12 +136,42 @@ def objective(
         )
     except NaNTensorError:
         raise optuna.TrialPruned("Numerical instabilities during SDE integration.")
+    except ValueError as e:
+        if str(e) == "Maximum allowed size exceeded":
+            raise optuna.TrialPruned(
+                "Sinkhorn loss cannot be computed (scaling issues)."
+            )
+        else:
+            raise e
 
     logger.info(f"Final test loss: {test_losses[-1]}")
     file_handler.flush()
     logger.removeHandler(file_handler)
     file_handler.close()
     return test_losses[-1]
+
+
+def run_optimization(
+    _,
+    objective_func,
+    out_dir: Path,
+    study_name: str,
+    dataset: str,
+    loss_func: str,
+    weighted_loss: bool,
+    n_trials: int,
+):
+    study = optuna.create_study(
+        storage=JournalStorage(
+            JournalFileBackend(file_path=str(out_dir / "journal.log"))
+        ),
+        study_name=study_name,
+        load_if_exists=True,
+    )
+    study.set_user_attr("dataset", dataset)
+    study.set_user_attr("loss_function", loss_func)
+    study.set_user_attr("weighted_loss", str(weighted_loss))
+    study.optimize(objective_func, n_trials=n_trials)
 
 
 if __name__ == "__main__":
@@ -257,14 +289,25 @@ if __name__ == "__main__":
     )
 
     # Run study
-    study = optuna.create_study(
-        storage=f"sqlite:///{out_dir / 'tuning.db'}",
-        study_name=args.name,
-        load_if_exists=True,
+    with Pool(processes=args.n_jobs) as pool:
+        pool.map(
+            partial(
+                run_optimization,
+                objective_func=objective_func,
+                out_dir=out_dir,
+                study_name=args.name,
+                dataset=args.input,
+                loss_func=args.loss_func,
+                weighted_loss=args.weighted_loss,
+                n_trials=int(args.n_trials / args.n_jobs),
+            ),
+            range(args.n_trials),
+        )
+
+    # Load finished study
+    study = optuna.load_study(
+        study_name=args.name, storage=str(out_dir / "journal.log")
     )
-    study.set_user_attr("dataset", args.input)
-    with parallel_backend("multiprocessing"):
-        study.optimize(objective_func, n_trials=args.n_trials, n_jobs=args.n_jobs)
 
     # Print and save results
     print("Best parameters: ", study.best_params)
