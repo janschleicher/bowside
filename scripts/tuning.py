@@ -252,6 +252,12 @@ if __name__ == "__main__":
         "--n-trials", type=int, default=100, help="Number of trials for optuna tuning."
     )
     parser.add_argument(
+        "--n-trials-per-worker",
+        type=int,
+        default=2,
+        help="Number of trials to start on one worker.",
+    )
+    parser.add_argument(
         "--n-jobs",
         type=int,
         default=1,
@@ -299,14 +305,15 @@ if __name__ == "__main__":
                 dataset=args.input,
                 loss_func=args.loss_func,
                 weighted_loss=args.weighted_loss,
-                n_trials=int(args.n_trials / args.n_jobs),
+                n_trials=args.n_trials_per_worker,
             ),
-            range(args.n_trials),
+            range(args.n_trials // args.n_trials_per_worker),
         )
 
     # Load finished study
     study = optuna.load_study(
-        study_name=args.name, storage=str(out_dir / "journal.log")
+        study_name=args.name,
+        storage=JournalStorage(JournalFileBackend(str(out_dir / "journal.log"))),
     )
 
     # Print and save results
