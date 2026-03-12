@@ -192,7 +192,7 @@ class PseudotimeDataset(Dataset):
         seed: int = 42,
         copy: bool = False,
     ):
-        if pseudotime_key not in adata.obs_keys():
+        if pseudotime_key not in adata.obs:
             raise KeyError("Pseudotime key not found in adata.obs.")
         # Prepare expression data
         self.adata = adata.copy() if copy else adata
@@ -232,9 +232,13 @@ class PseudotimeDataset(Dataset):
             num_cells, len(self.time_points), dtype=torch.int
         )
         integer_idx = torch.arange(len(self.adata))
+        generator = torch.Generator()
+        generator.manual_seed(seed)
         for i, tp in enumerate(time_points):
             tp_idx = integer_idx[self.pseudotime == tp]
-            self.sampled_cells[:, i] = tp_idx[torch.randint(len(tp_idx), (num_cells,))]
+            self.sampled_cells[:, i] = tp_idx[
+                torch.randint(len(tp_idx), (num_cells,), generator=generator)
+            ]
 
     def __len__(self):
         return self.sampled_cells.shape[0]
