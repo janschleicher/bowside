@@ -34,7 +34,7 @@ classifiers = [
 
 dependencies = [
     "tqdm",
-    "numpy",
+    "numpy<2.4",
     "pandas",
     "matplotlib",
     "seaborn",
