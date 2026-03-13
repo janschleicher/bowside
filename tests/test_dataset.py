@@ -1,3 +1,4 @@
+from contextlib import nullcontext as does_not_raise
 from typing import Optional, Union
 
 import numpy as np
@@ -6,7 +7,7 @@ import scanpy as sc
 import scvelo as scv
 from numpy.typing import NDArray
 
-from sc_markov_ode.dataset import MarkovChainDataset, VelocityDataset
+from sc_markov_ode.dataset import MarkovChainDataset, PseudotimeDataset, VelocityDataset
 from tests.conftest import TEST_DATA_PATH
 
 
@@ -18,35 +19,39 @@ def prepare():
         ADATA, self_transitions=False
     ).toarray()
     scv.tl.terminal_states(ADATA, self_transitions=False)
+    scv.tl.velocity_pseudotime(ADATA)
 
 
 @pytest.mark.parametrize(
-    "mask_var",
-    [None, "highly_variable", "array", "means"],
+    "mask_var, expectation",
+    [
+        (None, does_not_raise()),
+        ("highly_variable", does_not_raise()),
+        ("array", does_not_raise()),
+        (
+            "means",
+            pytest.raises(
+                TypeError,
+                match=r"Expected adata\.var\[mask_var\] to be of type bool, but got type \w+",
+            ),
+        ),
+    ],
 )
 @pytest.mark.parametrize("layer", [None, "spliced"])
 def test_markov_chain_dataset(
-    mask_var: Optional[Union[NDArray[np.bool_], str]], layer: Optional[str]
+    mask_var: Optional[Union[NDArray[np.bool_], str]], layer: Optional[str], expectation
 ):
     adata = ADATA.copy()
     if mask_var == "array":
         rng = np.random.default_rng(42)
         mask_var = rng.choice(2, adata.shape[1]).astype(bool)
     num_chains = 1_000
-    if isinstance(mask_var, str) and mask_var == "means":
-        with pytest.raises(
-            TypeError,
-            match=r"Expected adata\.var\[mask_var\] to be of type bool, but got type \w+",
-        ):
-            dataset = MarkovChainDataset(
-                adata, layer=layer, mask_var=mask_var, num_chains=num_chains
-            )
-        return
-
-    else:
+    with expectation as context:
         dataset = MarkovChainDataset(
             adata, layer=layer, mask_var=mask_var, num_chains=num_chains
         )
+    if context is not None:
+        return
 
     if isinstance(mask_var, np.ndarray):
         assert dataset.X.shape == (adata.shape[0], mask_var.sum()), (
@@ -71,27 +76,95 @@ def test_markov_chain_dataset(
 
 
 @pytest.mark.parametrize(
-    "mask_var",
-    [None, "highly_variable", "array", "means"],
+    "mask_var, pseudotime_key, expectation",
+    [
+        (None, "velocity_pseudotime", does_not_raise()),
+        (
+            None,
+            "pseudotime",
+            pytest.raises(KeyError, match="Pseudotime key not found in adata.obs."),
+        ),
+        ("highly_variable", "velocity_pseudotime", does_not_raise()),
+        ("array", "velocity_pseudotime", does_not_raise()),
+        (
+            "means",
+            "velocity_pseudotime",
+            pytest.raises(
+                TypeError,
+                match=r"Expected adata\.var\[mask_var\] to be of type bool, but got type \w+",
+            ),
+        ),
+    ],
 )
 @pytest.mark.parametrize("layer", [None, "Ms"])
-def test_velocity_dataset(
-    mask_var: Optional[Union[NDArray[np.bool_], str]], layer: Optional[str]
+def test_pseudotime_dataset(
+    mask_var: Optional[Union[NDArray[np.bool_], str]],
+    layer: Optional[str],
+    pseudotime_key: str,
+    expectation,
 ):
     adata = ADATA.copy()
     if mask_var == "array":
         rng = np.random.default_rng(42)
         mask_var = rng.choice(2, adata.shape[1]).astype(bool)
-    if isinstance(mask_var, str) and mask_var == "means":
-        with pytest.raises(
-            TypeError,
-            match=r"Expected adata\.var\[mask_var\] to be of type bool, but got type \w+",
-        ):
-            dataset = VelocityDataset(adata, layer=layer, mask_var=mask_var)
+    with expectation as context:
+        dataset = PseudotimeDataset(
+            adata,
+            layer=layer,
+            mask_var=mask_var,
+            pseudotime_key=pseudotime_key,
+        )
+    if context is not None:
         return
 
+    if isinstance(mask_var, np.ndarray):
+        assert dataset.X.shape == (adata.shape[0], mask_var.sum()), (
+            "Shape mismatch of AnnData and X when using boolean mask."
+        )
+    elif mask_var == "highly_variable":
+        assert dataset.X.shape == (
+            adata.shape[0],
+            adata.var["highly_variable"].sum(),
+        ), "Shape mismatch of AnnData and X when using highly variable genes."
     else:
+        assert dataset.X.shape == adata.shape, "Shape mismatch of AnnData and X."
+
+    batch_size = 4
+    minibatch_X = dataset[:4]
+    assert minibatch_X.shape == (
+        batch_size,
+        dataset.sampled_cells.shape[1],
+        dataset.X.shape[1],
+    ), "Shape mismatch of minibatch and (batch_size, num_genes) for expression matrix."
+
+
+@pytest.mark.parametrize(
+    "mask_var, expectation",
+    [
+        (None, does_not_raise()),
+        ("highly_variable", does_not_raise()),
+        ("array", does_not_raise()),
+        (
+            "means",
+            pytest.raises(
+                TypeError,
+                match=r"Expected adata\.var\[mask_var\] to be of type bool, but got type \w+",
+            ),
+        ),
+    ],
+)
+@pytest.mark.parametrize("layer", [None, "Ms"])
+def test_velocity_dataset(
+    mask_var: Optional[Union[NDArray[np.bool_], str]], layer: Optional[str], expectation
+):
+    adata = ADATA.copy()
+    if mask_var == "array":
+        rng = np.random.default_rng(42)
+        mask_var = rng.choice(2, adata.shape[1]).astype(bool)
+    with expectation as context:
         dataset = VelocityDataset(adata, layer=layer, mask_var=mask_var)
+    if context is not None:
+        return
 
     if isinstance(mask_var, np.ndarray):
         assert dataset.X.shape == (adata.shape[0], mask_var.sum()), (

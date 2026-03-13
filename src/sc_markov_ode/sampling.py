@@ -24,15 +24,15 @@ class MarkovSampler:
         AnnData object for sampling cell sequences.
     tpm_key : str, optional
         Key of the transition probability matrix in `adata.obsp` or
-        `adata.uns`, by default "T_forward".
+        `adata.uns`. Default: "T_forward".
     recompute_matrix : bool, optional
-        Whether the matrix should be recomputed, by default False.
+        Whether the matrix should be recomputed. Default: False.
     self_transitions : bool, optional
         Whether the matrix should be computed with self-transitions
-        enabled, by default False.
+        enabled. Default: False.
     copy : bool, optional
-        Whether the AnnData object should be copied or modified inplace,
-        by default False (modify inplace).
+        Whether the AnnData object should be copied or modified inplace.
+        Default: False (modify inplace).
     """
 
     adata: ad.AnnData
@@ -85,18 +85,18 @@ class MarkovSampler:
         Parameters
         ----------
         num_chains : int, optional
-            Number of Markov chains to simulate, by default 1,000.
+            Number of Markov chains to simulate. Default: 1,000.
         max_iter : int, optional
-            Maximum number of iterations for Markov chains, by default 1,000.
+            Maximum number of iterations for Markov chains. Default: 1,000.
         rtol : float, optional
-            Relative tolerance for convergence, by default 1e-5.
+            Relative tolerance for convergence. Default: 1e-5.
         atol : float, optional
-            Absolute tolerance for convergence, by default 1e-5.
+            Absolute tolerance for convergence. Default: 1e-5.
         n_jobs : int, optional
-            Number of threads when running on CPU, by default -1 (all
+            Number of threads when running on CPU. Default: -1 (all
             available threads).
         seed : int, optional
-            Random seed, by default 42.
+            Random seed. Default: 42.
 
         Returns
         -------
@@ -143,11 +143,11 @@ class MarkovSampler:
         Parameters
         ----------
         max_iter : int, optional
-            Maximum number of iterations for Markov chains, by default 1,000.
+            Maximum number of iterations for Markov chains. Default: 1,000.
         rtol : float, optional
-            Relative tolerance for convergence, by default 1e-5.
+            Relative tolerance for convergence. Default: 1e-5.
         atol : float, optional
-            Absolute tolerance for convergence, by default 1e-5.
+            Absolute tolerance for convergence. Default: 1e-5.
         """
         # FIXME: For pancreas dataset, convergence on MacBook is after 390 steps,
         # but after 306 steps on de.NBI GPU machine!
@@ -191,14 +191,14 @@ class MarkovSampler:
         Parameters
         ----------
         num_chains : int, optional
-            Number of Markov chains to simulate, by default 1,000.
+            Number of Markov chains to simulate. Default: 1,000.
         max_iter : int, optional
-            Maximum number of iterations for Markov chains, by default 1,000.
+            Maximum number of iterations for Markov chains. Default: 1,000.
         n_jobs : int, optional
-            Number of threads when running on CPU, by default -1 (all
+            Number of threads when running on CPU. Default: -1 (all
             available threads).
         seed : int, optional
-            Random seed, by default 42.
+            Random seed. Default: 42.
 
         Returns
         -------

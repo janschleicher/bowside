@@ -1,5 +1,6 @@
 """Module for datasets to be used to train an ODE GRN model."""
 
+from collections.abc import Sequence
 from typing import Optional, Union
 
 import anndata as ad
@@ -16,7 +17,7 @@ from sc_markov_ode.sampling import MarkovSampler
 class MarkovChainDataset(Dataset):
     """
     A pytorch dataset to generate Markov chain cell sequences, ready for
-    training an ODE model.
+    training an ODE or SDE model.
 
     Parameters
     ----------
@@ -24,35 +25,35 @@ class MarkovChainDataset(Dataset):
         AnnData object.
     layer : Optional[str], optional
         Layer of the AnnData object to use as the gene expression values.
-        If `None`, use adata.X. By default None.
+        If `None`, use adata.X. Default: None.
     mask_var : Optional[Union[NDArray[np.bool_], str]], optional
         Only use a subset of genes given by a boolean array or a string
-        referring to a column in `adata.var`. By default, None (use
+        referring to a column in `adata.var`. Default: None (use
         all genes).
     tpm_key : str, optional
         Key of the transition probability matrix in `adata.obsp` or
-        `adata.uns`, by default "T_forward".
+        `adata.uns`. Default: "T_forward".
     recompute_matrix : bool, optional
-        Whether the matrix should be recomputed, by default False.
+        Whether the matrix should be recomputed. Default: False.
     self_transitions : bool, optional
         Whether the matrix should be computed with self-transitions
-        enabled, by default False.
+        enabled. Default: False.
     num_chains : int, optional
-        Number of Markov chains to simulate, by default 1,000.
+        Number of Markov chains to simulate. Default: 1,000.
     max_iter : int, optional
-        Maximum number of iterations for Markov chains, by default 1,000.
+        Maximum number of iterations for Markov chains. Default: 1,000.
     rtol : float, optional
-        Relative tolerance for convergence, by default 1e-5.
+        Relative tolerance for convergence. Default: 1e-5.
     atol : float, optional
-        Absolute tolerance for convergence, by default 1e-5.
+        Absolute tolerance for convergence. Default: 1e-5.
     n_jobs : int, optional
-        Number of threads used for Markov sampling when running on CPU,
-        by default -1 (all available threads).
+        Number of threads used for Markov sampling when running on CPU.
+        Default: -1 (all available threads).
     seed : int, optional
-        Random seed, by default 42.
+        Random seed. Default: 42.
     copy : bool, optional
-        Whether the AnnData object should be copied or modified inplace,
-        by default False (modify inplace).
+        Whether the AnnData object should be copied or modified inplace.
+        Default: False (modify inplace).
     """
 
     adata: ad.AnnData
@@ -131,6 +132,119 @@ class MarkovChainDataset(Dataset):
 
     def __getitem__(self, idx):
         return self.X[self.markov_chains[idx, :], :]
+
+    def n_genes(self):
+        return len(self.gene_names)
+
+
+class PseudotimeDataset(Dataset):
+    """
+    A pytorch dataset to sample cells along (pseudo) time, ready for
+    training an ODE or SDE model with a distributional loss.
+
+    Parameters
+    ----------
+    adata : ad.AnnData
+        AnnData object.
+    layer : Optional[str], optional
+        Layer of the AnnData object to use as the gene expression values.
+        If `None`, use adata.X. Default: None.
+    mask_var : Optional[Union[NDArray[np.bool_], str]], optional
+        Only use a subset of genes given by a boolean array or a string
+        referring to a column in `adata.var`. Default: None (use
+        all genes).
+    pseudotime_key : str, optional
+        Key of the (pseudo) time annotation in `adata.obs`. Default:
+        "pseudotime".
+    num_cells : int, optional
+        Number of cells to sample for each time point. Default: 1,000.
+    num_quantiles : int, optional
+        Number of quantiles for generating for sampling cells along
+        (pseudo) time. Default: 20.
+    time_points : Optional[Union[NDArray[np.bool_], str]], option
+        Explicit time points to use for sampling cells. Overrides
+        `num_quantiles`. Default: None (use quantiles along pseudottime).
+    seed : int, optional
+        Random seed. Default: 42.
+    copy : bool, optional
+        Whether the AnnData object should be copied or modified inplace.
+        Default: False (modify inplace).
+    """
+
+    adata: ad.AnnData
+    """AnnData object for sampling cell sequences and getting gene expression."""
+    X: torch.Tensor
+    """Gene expression tensor of shape (n_cells, n_genes)."""
+    sampled_cells: torch.Tensor
+    """Sampled cell indices of shape (num_cells, len(self.time_points))."""
+    gene_names: pd.Index
+    """Gene names index of shape (n_genes,)."""
+
+    def __init__(
+        self,
+        adata: ad.AnnData,
+        layer: Optional[str] = None,
+        mask_var: Optional[Union[NDArray[np.bool_], str]] = "highly_variable",
+        pseudotime_key: str = "pseudotime",
+        num_cells: int = 1_000,
+        num_quantiles: int = 20,
+        time_points: Optional[Sequence[Union[int, float]]] = None,
+        seed: int = 42,
+        copy: bool = False,
+    ):
+        if pseudotime_key not in adata.obs:
+            raise KeyError("Pseudotime key not found in adata.obs.")
+        # Prepare expression data
+        self.adata = adata.copy() if copy else adata
+        X = self.adata.X if layer is None else self.adata.layers[layer]
+        if X is None:
+            raise ValueError(
+                "Invalid gene expression matrix. Make sure that adata.X is present."
+            )
+        self.gene_names = self.adata.var_names
+        if mask_var is not None:
+            if isinstance(mask_var, str):
+                if adata.var[mask_var].dtype != bool:
+                    raise TypeError(
+                        f"Expected adata.var[mask_var] to be of type bool, but got type {adata.var[mask_var].dtype}"
+                    )
+                mask_var = self.adata.var[mask_var].to_numpy()
+            X = X[:, mask_var]
+            self.gene_names = self.gene_names[mask_var]
+        if isinstance(
+            X,
+            (sparse.csc_array, sparse.csr_array, sparse.csc_matrix, sparse.csr_matrix),
+        ):
+            X = X.toarray()
+        self.X = torch.from_numpy(X)
+
+        # Sample cells at time points
+        pseudotime: pd.Series = adata.obs[pseudotime_key]
+        if time_points is None:
+            # Use quantile center as bin value
+            pseudotime = pd.qcut(pseudotime, num_quantiles).apply(
+                lambda x: (x.left + x.right) / 2
+            )
+            time_points = sorted(pseudotime.cat.categories)
+        self.pseudotime = torch.from_numpy(pseudotime.to_numpy())
+        self.time_points = torch.from_numpy(np.asarray(time_points))
+        self.sampled_cells = torch.zeros(
+            num_cells, len(self.time_points), dtype=torch.int
+        )
+        integer_idx = torch.arange(len(self.adata))
+        generator = torch.Generator()
+        generator.manual_seed(seed)
+        for i, tp in enumerate(time_points):
+            tp_idx = integer_idx[self.pseudotime == tp]
+            self.sampled_cells[:, i] = tp_idx[
+                torch.randint(len(tp_idx), (num_cells,), generator=generator)
+            ]
+
+    def __len__(self):
+        return self.sampled_cells.shape[0]
+
+    def __getitem__(self, idx):
+        return self.X[self.sampled_cells[idx, :], :]
 
     def n_genes(self):
         return len(self.gene_names)

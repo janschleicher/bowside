@@ -1,22 +1,26 @@
 """Module for training of dynamic GRN model."""
 
+import inspect
 import logging
 from collections.abc import Callable
 from functools import partial
 from math import floor, log10
 from pathlib import Path
-from typing import Any, List, Optional, Protocol, Tuple, Union
+from typing import Any, List, Literal, Optional, Protocol, Tuple, Union
 
 import torch
+from geomloss import SamplesLoss
 from torchdiffeq import odeint, odeint_adjoint
 from torchsde import sdeint, sdeint_adjoint
 from tqdm.auto import tqdm
 from tqdm.contrib.logging import logging_redirect_tqdm
 
-from sc_markov_ode.dataset import MarkovChainDataset
+from sc_markov_ode.dataset import MarkovChainDataset, PseudotimeDataset
 from sc_markov_ode.model import GRNModel, GRNModelSDE
 
-log = logging.getLogger(__name__)
+
+class NaNTensorError(RuntimeError):
+    pass
 
 
 def qqloss(
@@ -27,6 +31,7 @@ def qqloss(
     metric: Callable[
         [torch.Tensor, torch.Tensor], torch.Tensor
     ] = torch.nn.functional.mse_loss,
+    weight: Optional[torch.Tensor] = None,
 ) -> torch.Tensor:
     """
     Compute the difference between the quantiles of two tensors along a
@@ -45,6 +50,9 @@ def qqloss(
     metric : Callable, optional
         Metric for comparing the quantiles. Default:
         `torch.nn.functional.mse_loss`.
+    weight : Optional[torch.Tensor], optional
+        Weights for each sample. Only used when `metric` supports this.
+        Default: None.
 
     Returns
     -------
@@ -52,10 +60,79 @@ def qqloss(
         Difference between quantiles.
     """
     quantiles = torch.linspace(0, 1, n_quantiles + 1, device=y_true.device)
+    signature = inspect.signature(metric)
+    has_weight = any(param.name == "weight" for param in signature.parameters.values())
+    pred = torch.quantile(y_pred, quantiles, dim=dim)
+    if has_weight:
+        if weight is not None:
+            weight = weight[None, :, None].expand(pred.size()).to(y_true.device)
+        metric = partial(metric, weight=weight)  # type: ignore
     return metric(
-        torch.quantile(y_pred, quantiles, dim=dim),
+        pred,
         torch.quantile(y_true, quantiles, dim=dim),
     )
+
+
+def sinkhorn_loss(
+    y_pred: torch.Tensor,
+    y_true: torch.Tensor,
+    backend: Literal["auto", "tensorized", "online", "multiscale"] = "auto",
+    p: int = 2,
+    blur: float = 0.1,
+    scaling: float = 0.7,
+    debias: bool = True,
+    weight: Optional[torch.Tensor] = None,
+) -> torch.Tensor:
+    """
+    Compute the Sinkhorn divergence between two tensors.
+
+    Parameters
+    ----------
+    y_pred : torch.Tensor
+        Predicted values.
+    y_true : torch.Tensor
+        True values.
+    backend : Literal["auto", "tensorized", "online", "multiscale"], optional
+        The implementation that will be used in the background.
+        Default: "auto". Supported values:
+        - "auto": Choose backend automatically.
+        - "tensorized": Computes on a full cost/kernel matrix once and
+            and stores it on the device memory.
+        - "online": Computes cost/kernel values on-the-fly.
+        - "multiscale": Fast implementation that scales to millions of samples.
+    p : int, optional
+        Specifies the ground cost function between points. Default: 2.
+        Supported values:
+        - p=1: Euclidean distance.
+        - p=2: Squared Euclidean distance.
+    blur : float, optional
+        Scale associated with the temperature. Default: 0.1.
+    scaling : float, optional
+        Ratio of between successive values in the scaling descent. Default: 0.7.
+    debias : bool, optional
+        Compute unbiased Sinkhorn divergence. Default: True.
+    weight : Optional[torch.Tensor], optional
+        Weights for each sample. Default: None.
+
+    Returns
+    -------
+    torch.Tensor
+        Average Sinkhorn divergence across samples.
+    """
+    loss_fn: Callable[[torch.Tensor, torch.Tensor], torch.Tensor] = SamplesLoss(
+        loss="sinkhorn",
+        backend=backend,
+        p=p,
+        blur=blur,
+        scaling=scaling,
+        debias=debias,
+    )
+    loss = loss_fn(y_pred, y_true)
+    if weight is None:
+        return loss.mean()
+    else:
+        weight = weight.to(y_true.device)
+        return (loss @ weight) / weight.sum()
 
 
 class LossFunction(Protocol):
@@ -66,8 +143,9 @@ class LossFunction(Protocol):
 
 def integrate_model(
     y0: torch.Tensor,
-    n_steps: int,
     model: GRNModel,
+    n_steps: Optional[int] = None,
+    time_points: Optional[torch.Tensor] = None,
     adjoint: bool = False,
     solver_method: Optional[str] = None,
     dt: float = 0.001,
@@ -83,27 +161,33 @@ def integrate_model(
     ----------
     y0 : torch.Tensor
         Initial state of the differential equation of shape (batch_size, n_var).
-    n_steps : int
-        Number of steps to integrate.
     model : GRNModel
         The gene regulatory network model.
+    n_steps : Optional[int], optional
+        Number of steps to integrate. Mutually exclusive with
+        `time_points`. Using this option will generate `n_steps` equally
+        spaced time points from 0 to `n_steps` - 1. Default: None.
+    time_points : Optional[torch.Tensor], optional
+        Time points to use for integration. Mutually exclusive with
+        `num_steps`. Allows explicitly specifying the time points.
+        Default: None.
     adjoint : bool, optional
-        Whether to use the adjoint method. By default False.
+        Whether to use the adjoint method. Default: False.
     solver_method : Optional[str], optional
         Numerical solver to use. With the default None, a suitable method
         is chosen depending on the mode type.
     dt : float, optional
-        The step size for the solver. Only used for SDEs. By default 0.001.
+        The step size for the solver. Only used for SDEs. Default: 0.001.
     atol : float, optional
-        Absolute tolerance. By default 1e-4.
+        Absolute tolerance. Default: 1e-4.
     rtol : float, optional
-        Relative tolerance. By default 1e-5.
+        Relative tolerance. Default: 1e-5.
     adjoint_atol : float, optional
         Absolute tolerance for backward adjoint solve. Only used when
-        `adjoint=True`. By default 1e-4.
+        `adjoint=True`. Default: 1e-4.
     adjoint_rtol : float, optional
         Relative tolerance for backward adjoint solve. Only used when
-        `adjoint=True`. By default 1e-5.
+        `adjoint=True`. Default: 1e-5.
 
     Returns
     -------
@@ -136,11 +220,28 @@ def integrate_model(
     else:
         raise TypeError(f"Expected type GRNModel, but got {type(model)}.")
 
-    # Integrate and compute loss
+    if n_steps is None:
+        if time_points is None:
+            raise ValueError(
+                "Arguments `n_steps` and `time_points` are both `None`. You must set one of them."
+            )
+        else:
+            ts = time_points.to(y0.device, dtype=y0.dtype)
+    else:
+        if time_points is not None:
+            raise ValueError(
+                "Arguments `n_steps` and `time_points` are mutually exclusive. Choose one."
+            )
+        else:
+            ts = torch.linspace(
+                0, n_steps - 1, n_steps, dtype=y0.dtype, device=y0.device
+            )
+
+    # Integrate
     pred = int_func(
         model,
         y0,
-        torch.linspace(0, n_steps - 1, n_steps, dtype=torch.float32, device=y0.device),
+        ts,
         method=solver_method,
         atol=atol,
         rtol=rtol,
@@ -157,6 +258,7 @@ def train_step_integration(
     model: GRNModel,
     optimizer: torch.optim.Optimizer,
     loss_func: LossFunction,
+    time_points: Optional[torch.Tensor] = None,
     adjoint: bool = False,
     solver_method: Optional[str] = None,
     dt: float = 0.001,
@@ -181,36 +283,44 @@ def train_step_integration(
         PyTorch optimizer for model training.
     loss_func : LossFunction
         Loss function to optimize.
+    time_points : Optional[torch.Tensor], optional
+        Time points to use for integration. Allows explicitly specifying
+        the time points. Default: None.
     adjoint : bool, optional
-        Whether to use the adjoint method. By default False.
+        Whether to use the adjoint method. Default: False.
     solver_method : Optional[str], optional
         Numerical solver to use. With the default None, a suitable method
         is chosen depending on the mode type.
     dt : float, optional
-        The step size for the solver. Only used for SDEs. By default 0.001.
+        The step size for the solver. Only used for SDEs. Default: 0.001.
     atol : float, optional
-        Absolute tolerance. By default 1e-4.
+        Absolute tolerance. Default: 1e-4.
     rtol : float, optional
-        Relative tolerance. By default 1e-5.
+        Relative tolerance. Default: 1e-5.
     adjoint_atol : float, optional
         Absolute tolerance for backward adjoint solve. Only used when
-        `adjoint=True`. By default 1e-4.
+        `adjoint=True`. Default: 1e-4.
     adjoint_rtol : float, optional
         Relative tolerance for backward adjoint solve. Only used when
-        `adjoint=True`. By default 1e-5.
+        `adjoint=True`. Default: 1e-5.
     loss_kwargs : dict, optional
-        Additional keyword arguments for the loss function. By default {}.
+        Additional keyword arguments for the loss function. Default: {}.
 
     Returns
     -------
     float
         Value of the training loss after the training step.
     """
+    n_steps = None
+    if time_points is None:
+        n_steps = y.shape[1]
+
     model.train()
     pred = integrate_model(
         y0=y[:, 0, :],
-        n_steps=y.shape[1],
         model=model,
+        n_steps=n_steps,
+        time_points=time_points,
         adjoint=adjoint,
         solver_method=solver_method,
         dt=dt,
@@ -219,9 +329,13 @@ def train_step_integration(
         adjoint_atol=adjoint_atol,
         adjoint_rtol=adjoint_rtol,
     )
+    if torch.any(pred.isnan()):
+        raise NaNTensorError("Numerical integration resulted in all NaN tensor.")
 
     # Backpropagation
-    loss = loss_func(pred, y.permute(1, 0, 2), **loss_kwargs)
+    loss = loss_func(pred.contiguous(), y.permute(1, 0, 2).contiguous(), **loss_kwargs)
+    if loss.dim() >= 1:
+        loss = loss.sum()
     loss.backward()
     optimizer.step()
     optimizer.zero_grad()
@@ -233,6 +347,7 @@ def test(
     y: torch.Tensor,
     model: GRNModel,
     loss_func: LossFunction,
+    time_points: Optional[torch.Tensor] = None,
     solver_method: Optional[str] = None,
     dt: float = 0.001,
     atol: float = 1e-4,
@@ -251,40 +366,57 @@ def test(
         The gene regulatory network model.
     loss_func : LossFunction
         Loss function to optimize.
+    time_points : Optional[torch.Tensor], optional
+        Time points to use for integration. Allows explicitly specifying
+        the time points. Default: None.
     solver_method : Optional[str], optional
         Numerical solver to use. With the default None, a suitable method
         is chosen depending on the mode type.
     dt : float, optional
-        The step size for the solver. Only used for SDEs. By default 0.001.
+        The step size for the solver. Only used for SDEs. Default: 0.001.
     atol : float, optional
-        Absolute tolerance. By default 1e-4.
+        Absolute tolerance. Default: 1e-4.
     rtol : float, optional
-        Relative tolerance. By default 1e-5.
+        Relative tolerance. Default: 1e-5.
     loss_kwargs : dict, optional
-        Additional keyword arguments for the loss function. By default {}.
+        Additional keyword arguments for the loss function. Default: {}.
 
     Returns
     -------
     float
         Value of the test lost.
     """
+    n_steps = None
+    if time_points is None:
+        n_steps = y.shape[1]
+
     model.eval()
     with torch.no_grad():
         pred = integrate_model(
             y0=y[:, 0, :],
-            n_steps=y.shape[1],
             model=model,
+            n_steps=n_steps,
+            time_points=time_points,
             adjoint=False,
             solver_method=solver_method,
             dt=dt,
             atol=atol,
             rtol=rtol,
         )
-        return loss_func(pred, y.permute(1, 0, 2), **loss_kwargs).item()
+
+        if torch.any(pred.isnan()):
+            raise NaNTensorError("Numerical integration resulted in all NaN tensor.")
+
+        loss = loss_func(
+            pred.contiguous(), y.permute(1, 0, 2).contiguous(), **loss_kwargs
+        )
+        if loss.dim() >= 1:
+            loss = loss.sum()
+        return loss.item()
 
 
 def train_integration(
-    dataset: MarkovChainDataset,
+    dataset: Union[MarkovChainDataset, PseudotimeDataset],
     model: GRNModel,
     optimizer: torch.optim.Optimizer,
     loss_func: LossFunction,
@@ -301,15 +433,16 @@ def train_integration(
     adjoint_rtol: float = 1e-5,
     loss_kwargs: dict = {},
     num_workers_loader: int = 0,
-    checkpoint: Optional[int] = None,
+    checkpoint: Optional[Union[int, Literal["final"]]] = None,
     checkpoint_dir: Optional[Union[str, Path]] = None,
+    logger: Optional[logging.Logger] = None,
 ) -> Tuple[List[float], List[float]]:
     """
     Train a gene regulatory network ODE/SDE model using integration.
 
     Parameters
     ----------
-    dataset : MarkovChainDataset
+    dataset : Union[MarkovChainDataset, PseudotimeDataset]
         Dataset to use for training.
     model : GRNModel
         The gene regulatory network model.
@@ -318,38 +451,39 @@ def train_integration(
     loss_func : LossFunction
         Loss function to optimize.
     train_proportion : float, optional
-        Proportion of samples to use for training. By default 0.8.
+        Proportion of samples to use for training. Default: 0.8.
     batch_size : Optional[int], optional
         Batch size. With the default None, all samples are used at once.
     num_epochs : int, optional
-        Number of training epochs. By default 1000.
+        Number of training epochs. Default: 1000.
     use_accelerator : bool, optional
         Whether to use an accelerator (CUDA or MPS) if it is available.
-        By default True.
+        Default: True.
     adjoint : bool, optional
-        Whether to use the adjoint method. By default False.
+        Whether to use the adjoint method. Default: False.
     solver_method : Optional[str], optional
         Numerical solver to use. With the default None, a suitable method
         is chosen depending on the mode type.
     dt : float, optional
-        The step size for the solver. Only used for SDEs. By default 0.001.
+        The step size for the solver. Only used for SDEs. Default: 0.001.
     atol : float, optional
-        Absolute tolerance. By default 1e-4.
+        Absolute tolerance. Default: 1e-4.
     rtol : float, optional
-        Relative tolerance. By default 1e-5.
+        Relative tolerance. Default: 1e-5.
     adjoint_atol : float, optional
         Absolute tolerance for backward adjoint solve. Only used when
-        `adjoint=True`. By default 1e-4.
+        `adjoint=True`. Default: 1e-4.
     adjoint_rtol : float, optional
         Relative tolerance for backward adjoint solve. Only used when
-        `adjoint=True`. By default 1e-5.
+        `adjoint=True`. Default: 1e-5.
     loss_kwargs : dict, optional
-        Additional keyword arguments for the loss function. By default {}.
+        Additional keyword arguments for the loss function. Default: {}.
     num_workers_loader : int, optional
         Number of subprocesses to use for data loading. With the default,
         0, data is loaded in the main process.
-    checkpoint : int, optional
-        Save the model state every `checkpoint` epochs. The default None
+    checkpoint : Optional[Union[int, Literal["final"]]], optional
+        Save the model state every `checkpoint` epochs, or only save the
+        state of the final model with "final". The default None
         corresponds to not saving any checkpoints.
 
     Returns
@@ -365,6 +499,11 @@ def train_integration(
     ValueError
         An error is raised if `checkpoint` is larger than `num_epochs`.
     """
+    # Use logger passed to the function if applicable
+    if logger is not None:
+        log = logger
+    else:
+        log = logging.getLogger(__name__)
     if checkpoint_dir is None:
         checkpoint_dir = Path("./checkpoints")
     elif isinstance(checkpoint_dir, str):
@@ -377,9 +516,13 @@ def train_integration(
 
     if checkpoint is not None:
         if not isinstance(checkpoint, int):
-            raise TypeError(
-                f"Argument `checkpoint` must be of type int, but got {type(checkpoint)}."
-            )
+            if checkpoint == "final":
+                checkpoint_dir.mkdir(parents=True, exist_ok=True)
+                log.info(f"Saving final model state to directory {checkpoint_dir}.")
+            else:
+                raise TypeError(
+                    f"Argument `checkpoint` must be of type int or 'final', but got {type(checkpoint)}."
+                )
         elif checkpoint > num_epochs:
             raise ValueError(
                 f"Argument `checkpoint` must be smaller than `num_epochs`. "
@@ -401,6 +544,14 @@ def train_integration(
         device = torch.device("cpu")
     model = model.to(device)
     log.info(f"Running on device '{device}'")
+
+    time_points = None
+    if isinstance(dataset, PseudotimeDataset):
+        time_points = dataset.time_points
+    elif not isinstance(dataset, MarkovChainDataset):
+        raise TypeError(
+            "Incompatible dataset type. Use `MarkovChainDataset` or `PseudotimeDataset`."
+        )
 
     train_length = floor(len(dataset) * train_proportion)
     trainset, testset = torch.utils.data.random_split(
@@ -453,6 +604,7 @@ def train_integration(
                     model=model,
                     optimizer=optimizer,
                     loss_func=loss_func,
+                    time_points=time_points,
                     adjoint=adjoint,
                     solver_method=solver_method,
                     dt=dt,
@@ -473,6 +625,7 @@ def train_integration(
                     y=y,
                     model=model,
                     loss_func=loss_func,
+                    time_points=time_points,
                     solver_method=solver_method,
                     dt=dt,
                     atol=atol,
@@ -487,7 +640,7 @@ def train_integration(
             )
 
             # Save checkpoint
-            if checkpoint is not None and epoch % checkpoint == 0:
+            if isinstance(checkpoint, int) and epoch % checkpoint == 0:
                 torch.save(
                     {
                         "epoch": epoch,

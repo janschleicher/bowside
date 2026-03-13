@@ -77,6 +77,7 @@ class GRNModel(torch.nn.Module):
         self.log_decay_rate = torch.empty(n_genes)
         torch.nn.init.normal_(self.log_decay_rate, mean=0, std=0.01)
         self.log_decay_rate = torch.nn.Parameter(self.log_decay_rate)
+        self.log_scale = torch.nn.Parameter(torch.zeros(n_genes))
 
         match activation:
             case "sigmoid":
@@ -92,7 +93,8 @@ class GRNModel(torch.nn.Module):
         # TODO: Add scaling factor inside sigmoid function so it does not saturate so easily
         # or initialize adj with smaller weights to facilitate training
         return (
-            self.activation(
+            self.log_scale.exp()
+            * self.activation(
                 ((self.adj * self.adj_mask).T @ x.T).T + self.log_bias.exp()
             )
             - self.log_decay_rate.exp() * x
@@ -120,11 +122,20 @@ class GRNModelSDE(GRNModel):
         not provided. Default: 0.9.
     activation : Literal["sigmoid", "identity", "softplus", "relu"], optional
         Activation function for the production rates. Default: "sigmoid".
-    sde_type: Literal["ito", "stratonovich"], optional
+    sde_type : Literal["ito", "stratonovich"], optional
         Type of the SDE, depending on the underlying type of integral.
         Default: "ito".
-    sigma: float, optional
+    sigma : float, optional
         Level of the (diagonal) noise. Default: 0.1.
+    shared_sigma : bool, opional
+        Whether to share sigma across all genes. Default: True.
+    fixed_sigma : bool, optional
+        Whether to use a fixed value of sigma. If set to False, sigma
+        will be a learnable parameter. Only implemented for
+        `shared_sigma=True`. Default: False.
+    constant_noise : bool, optional
+        Whether the noise should be constant (sigma). The alternative is
+        to multiply sigma with the expression level. Default: True.
     """
 
     def __init__(
@@ -136,6 +147,9 @@ class GRNModelSDE(GRNModel):
         activation: Literal["sigmoid", "identity", "softplus", "relu"] = "sigmoid",
         sde_type: Literal["ito", "stratonovich"] = "ito",
         sigma: float = 0.1,
+        shared_sigma: bool = True,
+        fixed_sigma: bool = False,
+        constant_noise: bool = True,
     ):
         super().__init__(
             n_genes=n_genes,
@@ -146,10 +160,25 @@ class GRNModelSDE(GRNModel):
         )
         self.noise_type = "diagonal"
         self.sde_type = sde_type
-        self.sigma = torch.nn.parameter.Buffer(torch.tensor([[sigma]]))
+        if shared_sigma:
+            self.log_sigma = torch.nn.Parameter(
+                torch.log(torch.tensor([sigma])), requires_grad=(not fixed_sigma)
+            )
+        else:
+            if fixed_sigma:
+                raise NotImplementedError("Fixed, gene-wise sigma is not implemented.")
+            else:
+                self.log_sigma = torch.nn.Parameter(
+                    torch.log(torch.ones((n_genes)) * sigma)
+                )
+        self.constant_noise = torch.nn.Buffer(torch.tensor(constant_noise))
 
     def f(self, t, x):
         return super().forward(t, x)
 
     def g(self, t, x):
-        return self.sigma.repeat(x.size(0), x.size(1))
+        sigma = self.log_sigma.exp().expand(x.size(0), x.size(1))
+        if self.constant_noise:
+            return sigma
+        else:
+            return sigma * x

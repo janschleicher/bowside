@@ -1,13 +1,24 @@
+import os
+import shutil
 from collections.abc import Callable
-from typing import Literal
+from functools import partial
+from math import floor, log10
+from pathlib import Path
+from typing import Literal, Optional, Union
 
 import pytest
 import scanpy as sc
+import scvelo as scv
 import torch
 
-from sc_markov_ode.dataset import MarkovChainDataset
+from sc_markov_ode.dataset import MarkovChainDataset, PseudotimeDataset
 from sc_markov_ode.model import GRNModel, GRNModelSDE
-from sc_markov_ode.training import integrate_model, qqloss, train_integration
+from sc_markov_ode.training import (
+    integrate_model,
+    qqloss,
+    sinkhorn_loss,
+    train_integration,
+)
 from tests.conftest import TEST_DATA_PATH
 
 torch.manual_seed(42)
@@ -21,6 +32,32 @@ Y_TRUE_SMALL = torch.tensor([[1, 1, 1, 1, 1, 3, 8, 8, 8, 8, 8]]).float()[
 Y_PRED_SMALL = torch.tensor([[3, 3, 3, 3, 3, 5, 6, 6, 6, 6, 6]]).float()[
     :, torch.randperm(11)
 ]
+
+OUT_DIR = Path("test_out/")
+
+
+@pytest.fixture(scope="module", autouse=True)
+def prepare():
+    global ADATA
+    ADATA = sc.read_h5ad(TEST_DATA_PATH)
+    ADATA.obsp["T_forward"] = scv.utils.get_transition_matrix(
+        ADATA, self_transitions=False
+    ).toarray()
+    scv.tl.terminal_states(ADATA, self_transitions=False)
+    scv.tl.velocity_pseudotime(ADATA)
+
+    global dataset
+    dataset = PseudotimeDataset(
+        ADATA, pseudotime_key="velocity_pseudotime", num_cells=500, copy=True
+    )
+    generator = torch.manual_seed(42)
+    global Y_TRUE_PT, Y_PRED_PT
+    Y_TRUE_PT = dataset[:].permute(1, 0, 2).contiguous()
+    Y_PRED_PT = (
+        dataset[:][torch.randperm(len(dataset), generator=generator), :, :]
+        .permute(1, 0, 2)
+        .contiguous()
+    )
 
 
 @pytest.mark.parametrize(
@@ -50,15 +87,73 @@ def test_qqloss(
 
 
 @pytest.mark.parametrize(
-    "model_type, batch_size, num_chains",
+    "y_pred, y_true, expected_loss",
     [
-        ["ode", None, 100],
-        ["ode", 100, 500],
-        ["sde", None, 100],
+        [Y_PRED_PERFECT.T, Y_TRUE.T, 0],
+        [Y_PRED_TWO_OFF, Y_TRUE, None],
+        [Y_PRED_SMALL, Y_TRUE_SMALL, None],
+    ],
+)
+def test_sinkhorn_loss(
+    y_pred: torch.Tensor,
+    y_true: torch.Tensor,
+    expected_loss: Optional[float],
+):
+    loss = sinkhorn_loss(y_pred, y_true)
+    if expected_loss is not None:
+        assert torch.isclose(loss, torch.tensor(expected_loss, dtype=loss.dtype)), (
+            f"Wrong loss value. Expected: {expected_loss:.2f}, actual: {loss.item():.2f}"
+        )
+    else:
+        assert loss > 0, "Loss value should be greater than 0."
+
+
+@pytest.mark.parametrize("loss", ["qqloss", "sinkhorn"])
+@pytest.mark.parametrize("weight", [None, torch.linspace(0, 10, 20)])
+def test_loss_pseudotime_data(
+    loss: Literal["qqloss", "sinkhorn"], weight: torch.Tensor
+):
+    if loss == "qqloss":
+        loss_func = partial(qqloss, dim=1)
+    elif loss == "sinkhorn":
+        loss_func = sinkhorn_loss
+    else:
+        raise ValueError("Invalid loss function. Must be one of ['qqloss', 'sinkhorn']")
+    loss_val = loss_func(
+        Y_PRED_PT,
+        Y_TRUE_PT,
+        weight=weight,
+    )
+    assert torch.isclose(loss_val, torch.tensor(0, dtype=loss_val.dtype), atol=1e-4), (
+        f"Loss value should be zero, but is {loss_val.item():.4g}."
+    )
+
+
+@pytest.mark.parametrize(
+    "model_type, batch_size, num_sims, shared_sigma, fixed_sigma, "
+    "constant_noise, dataset_type, checkpoint, checkpoint_dir, adjoint",
+    [
+        ["ode", None, 100, None, None, None, "markov", "final", OUT_DIR, False],
+        ["ode", None, 100, None, None, None, "pseudo", None, None, True],
+        ["ode", 100, 500, None, None, None, "markov", 1, OUT_DIR, False],
+        ["ode", 100, 500, None, None, None, "pseudo", 1, None, False],
+        ["sde", None, 100, True, True, True, "markov", "final", OUT_DIR, False],
+        ["sde", None, 100, True, True, False, "markov", None, None, True],
+        ["sde", None, 100, True, False, True, "markov", None, None, False],
+        ["sde", None, 100, False, False, True, "markov", None, None, False],
     ],
 )
 def test_train_integration(
-    model_type: Literal["ode", "sde"], batch_size: int, num_chains: int
+    model_type: Literal["ode", "sde"],
+    batch_size: int,
+    num_sims: int,
+    shared_sigma: bool,
+    fixed_sigma: bool,
+    constant_noise: bool,
+    dataset_type: Literal["markov", "pseudo"],
+    checkpoint: Optional[Union[int, Literal["final"]]],
+    checkpoint_dir: Optional[Path],
+    adjoint: bool,
 ):
     torch.manual_seed(42)
     dt = 0.1
@@ -79,19 +174,34 @@ def test_train_integration(
         device = torch.device("cpu")
 
     # Setup dataset and model, with highly variable genes
-    adata = sc.read_h5ad(TEST_DATA_PATH)
+    adata = ADATA.copy()
     n_genes = 10
     sc.pp.highly_variable_genes(adata, n_top_genes=n_genes)
-    dataset = MarkovChainDataset(
-        adata,
-        num_chains=num_chains,
-        mask_var="highly_variable",
-    )
+    if dataset_type == "markov":
+        dataset = MarkovChainDataset(
+            adata,
+            num_chains=num_sims,
+            mask_var="highly_variable",
+        )
+    elif dataset_type == "pseudo":
+        dataset = PseudotimeDataset(
+            adata,
+            num_cells=num_sims,
+            mask_var="highly_variable",
+            pseudotime_key="velocity_pseudotime",
+        )
+    else:
+        raise ValueError("Invalid dataset type. Should be one of ['markov', 'pseudo'].")
     match model_type:
         case "ode":
             model = GRNModel(n_genes=dataset.n_genes())
         case "sde":
-            model = GRNModelSDE(n_genes=dataset.n_genes())
+            model = GRNModelSDE(
+                n_genes=dataset.n_genes(),
+                shared_sigma=shared_sigma,
+                fixed_sigma=fixed_sigma,
+                constant_noise=constant_noise,
+            )
     model.to(device)
 
     adj_pre = model.adj.clone().detach()
@@ -99,8 +209,8 @@ def test_train_integration(
     y = dataset[:].to(device)
     y_pred = integrate_model(
         y[:, 0, :],
-        y.shape[1],
         model,
+        n_steps=y.shape[1],
         solver_method=solver_method,
         dt=dt,
         atol=atol,
@@ -109,24 +219,31 @@ def test_train_integration(
     untrained_loss = qqloss(y_pred, y.permute(1, 0, 2), dim=1, metric=loss_metric)
 
     optim = torch.optim.Adam(model.parameters())
+    if not batch_size:
+        num_epochs = 5
+    else:
+        num_epochs = 2
     _, _ = train_integration(
         dataset,
         model,
         optim,
         qqloss,
         batch_size=batch_size,
-        num_epochs=5 if not batch_size else 2,
+        num_epochs=num_epochs,
+        adjoint=adjoint,
         solver_method=solver_method,
         dt=dt,
         atol=atol,
         rtol=rtol,
         loss_kwargs={"metric": loss_metric, "dim": 1},
+        checkpoint=checkpoint,
+        checkpoint_dir=checkpoint_dir,
     )
 
     y_pred = integrate_model(
         y[:, 1, :],
-        y.shape[1],
         model,
+        n_steps=y.shape[1],
         solver_method=solver_method,
         dt=dt,
         atol=atol,
@@ -141,3 +258,68 @@ def test_train_integration(
     assert torch.any(model.adj != adj_pre), (
         "Training should change the adjacency matrix."
     )
+
+    # Check if model was saved
+    if checkpoint is not None:
+        if checkpoint_dir is None:
+            checkpoint_dir = Path("./checkpoints")
+        assert checkpoint_dir.exists(), "Checkpoint directory was not created."
+        if isinstance(checkpoint, int):
+            for i in range(0, num_epochs, checkpoint):
+                assert os.path.isfile(
+                    checkpoint_dir
+                    / f"checkpoint_e{i:0{floor(log10(num_epochs)) + 1}d}.tar"
+                ), f"Checkpoint for epoch {i} is missing."
+        assert os.path.isfile(checkpoint_dir / "checkpoint_final_model.tar")
+        shutil.rmtree(checkpoint_dir)
+
+
+def test_training_exceptions():
+    model = GRNModel(n_genes=dataset.n_genes())
+    optimizer = torch.optim.Adam(model.parameters())
+    train_func = partial(
+        train_integration,
+        dataset=dataset,
+        model=model,
+        optimizer=optimizer,
+        loss_func=sinkhorn_loss,
+    )
+    # Wrong checkpoint configuration
+    with pytest.raises(
+        TypeError, match="Argument `checkpoint_dir` must be of type str or Path"
+    ):
+        train_func(checkpoint_dir=42)  # type: ignore
+    with pytest.raises(
+        ValueError, match="Argument `checkpoint` must be smaller than `num_epochs`."
+    ):
+        train_func(num_epochs=5, checkpoint=10)  # type: ignore
+    with pytest.raises(
+        TypeError,
+        match="Argument `checkpoint` must be of type int or 'final', but got ",
+    ):
+        train_func(checkpoint="all")  # type: ignore
+
+    # Wrong model
+    y0 = dataset[:][:, 0, :]
+    wrong_model = torch.nn.Module()
+    with pytest.raises(TypeError, match="Expected type GRNModel, but got "):
+        integrate_model(y0, wrong_model, 10)  # type: ignore
+
+    # Wrong number of steps/time points configuration
+    with pytest.raises(
+        ValueError,
+        match="Arguments `n_steps` and `time_points` are both `None`. You must set one of them.",
+    ):
+        integrate_model(y0, model)
+    with pytest.raises(
+        ValueError,
+        match="Arguments `n_steps` and `time_points` are mutually exclusive. Choose one.",
+    ):
+        integrate_model(y0, model, 10, dataset.time_points)
+
+    # Wrong dataset type
+    with pytest.raises(
+        TypeError,
+        match="Incompatible dataset type. Use `MarkovChainDataset` or `PseudotimeDataset`.",
+    ):
+        train_integration(ADATA, model, optimizer, sinkhorn_loss)  # type: ignore

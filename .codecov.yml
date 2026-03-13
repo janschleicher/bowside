@@ -8,3 +8,5 @@ coverage:
       default:
         # Require 80% coverage
         target: 80
+ignore:
+  - "scripts"
