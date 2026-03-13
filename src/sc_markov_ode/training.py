@@ -62,12 +62,13 @@ def qqloss(
     quantiles = torch.linspace(0, 1, n_quantiles + 1, device=y_true.device)
     signature = inspect.signature(metric)
     has_weight = any(param.name == "weight" for param in signature.parameters.values())
+    pred = torch.quantile(y_pred, quantiles, dim=dim)
     if has_weight:
         if weight is not None:
-            weight = weight.to(y_true.device)
+            weight = weight[None, :, None].expand(pred.size()).to(y_true.device)
         metric = partial(metric, weight=weight)  # type: ignore
     return metric(
-        torch.quantile(y_pred, quantiles, dim=dim),
+        pred,
         torch.quantile(y_true, quantiles, dim=dim),
     )
 
@@ -225,18 +226,18 @@ def integrate_model(
                 "Arguments `n_steps` and `time_points` are both `None`. You must set one of them."
             )
         else:
-            ts = time_points.to(y0.device)
+            ts = time_points.to(y0.device, dtype=y0.dtype)
     else:
         if time_points is not None:
             raise ValueError(
-                "Arguments `n_steps` and `time_points` are mutually exclusicve. Choose one."
+                "Arguments `n_steps` and `time_points` are mutually exclusive. Choose one."
             )
         else:
             ts = torch.linspace(
-                0, n_steps - 1, n_steps, dtype=torch.float32, device=y0.device
+                0, n_steps - 1, n_steps, dtype=y0.dtype, device=y0.device
             )
 
-    # Integrate and compute loss
+    # Integrate
     pred = int_func(
         model,
         y0,
@@ -548,7 +549,7 @@ def train_integration(
     if isinstance(dataset, PseudotimeDataset):
         time_points = dataset.time_points
     elif not isinstance(dataset, MarkovChainDataset):
-        raise ValueError(
+        raise TypeError(
             "Incompatible dataset type. Use `MarkovChainDataset` or `PseudotimeDataset`."
         )
 
