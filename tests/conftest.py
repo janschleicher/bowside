@@ -23,7 +23,7 @@ def setup_adata():
         # Perform preprocessing
         scv.pp.filter_genes(ADATA, min_shared_counts=20)
         scv.pp.normalize_per_cell(ADATA)
-        scv.pp.filter_genes_dispersion(ADATA, n_top_genes=2000)
+        sc.pp.highly_variable_genes(ADATA, n_top_genes=2000, subset=True)
         sc.pp.log1p(ADATA)
         sc.pp.neighbors(ADATA, n_pcs=30, n_neighbors=30)
         scv.pp.moments(ADATA, n_pcs=30, n_neighbors=30)
