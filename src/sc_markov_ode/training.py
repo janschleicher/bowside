@@ -2,6 +2,7 @@
 
 import inspect
 import logging
+import operator
 from collections.abc import Callable
 from functools import partial
 from math import floor, log10
@@ -17,6 +18,103 @@ from tqdm.contrib.logging import logging_redirect_tqdm
 
 from sc_markov_ode.dataset import MarkovChainDataset, PseudotimeDataset
 from sc_markov_ode.model import GRNModel, GRNModelSDE
+
+
+class EarlyStopping:
+    """
+    Early stopping during model training.
+
+    Parameters
+    ----------
+    patience : int, optional
+        Number of epochs to wait for an improvement before stopping.
+        Default: 5.
+    delta : float, optional
+        Minimum difference between consecutive loss values to consider
+        as an improvement. Default: 0.0.
+    mode : Literal["min", "max"], optional
+        The direction of the optimization. In "min" mode, training will
+        stop when the monitored quantity stops decreasing, in "max" mode
+        when it stops increasing. Default: "min".
+    logger : Optional[logging.Logger], optional
+        Logger instance for logging output. Default: None (uses logger
+        of this file).
+    """
+
+    def __init__(
+        self,
+        patience: int = 5,
+        delta: float = 0.0,
+        mode: Literal["min", "max"] = "min",
+        logger: Optional[logging.Logger] = None,
+    ):
+        # Value checks
+        if not isinstance(patience, int):
+            raise TypeError(
+                f"Parameter `patience` should be int, was {type(patience)}."
+            )
+        elif patience <= 0:
+            raise ValueError("Parameter `patience` must be strictly positive.")
+
+        if not isinstance(delta, float):
+            raise TypeError(f"Parameter `delta` should be float, was {type(delta)}.")
+        elif delta < 0:
+            raise ValueError("Parameter `delta` cannot be negative.")
+
+        if mode not in ["min", "max"]:
+            raise ValueError("Parameter `mode` must be one of ['min', 'max'].")
+
+        # Set attributes
+        self.patience = patience
+        self.delta = delta
+        self.mode = mode
+        self.best_value = torch.tensor(torch.inf)
+        if self.mode == "max":
+            self.best_value = -self.best_value
+            self.compare = operator.gt
+        else:
+            self.compare = operator.lt
+        self.epochs_without_improvement = 0
+
+        if logger is not None:
+            self.logger = logger
+        else:
+            self.logger = logging.getLogger(__name__)
+
+    def should_stop(self, value: float) -> bool:
+        """
+        Check whether model training should be stopped.
+
+        Parameters
+        ----------
+        value : torch.Tensor
+            Current value of the quantity tracked for early stopping.
+
+        Returns
+        -------
+        bool
+            Whether to stop training.
+        """
+        comparison_value = self.best_value
+        if self.mode == "max":
+            comparison_value += self.delta
+        else:
+            comparison_value -= self.delta
+
+        if self.compare(value, comparison_value):
+            self.best_value = value
+            self.epochs_without_improvement = 0
+            self.logger.debug(
+                "Model improved, resetting number of epochs without improvement."
+            )
+            return False
+        else:
+            self.epochs_without_improvement += 1
+            self.logger.debug("No model improvement.")
+            if self.epochs_without_improvement >= self.patience:
+                self.logger.info("Early stopping triggered.")
+                return True
+        return False
 
 
 class NaNTensorError(RuntimeError):
@@ -423,6 +521,10 @@ def train_integration(
     train_proportion: float = 0.8,
     batch_size: Optional[int] = None,
     num_epochs: int = 1000,
+    early_stopping: bool = True,
+    patience: int = 5,
+    delta: float = 0.0,
+    early_stopping_mode: Literal["min", "max"] = "min",
     use_accelerator: bool = True,
     adjoint: bool = False,
     solver_method: Optional[str] = None,
@@ -456,6 +558,19 @@ def train_integration(
         Batch size. With the default None, all samples are used at once.
     num_epochs : int, optional
         Number of training epochs. Default: 1000.
+    early_stopping : bool, optional
+        Whether to stop training when the loss does not improve.
+        Default: True.
+    patience : int, optional
+        Number of epochs to wait for an improvement before stopping.
+        Default: 5.
+    delta : float, optional
+        Minimum difference between consecutive loss values to consider
+        as an improvement. Default: 0.0.
+    early_stopping_mode : Literal["min", "max"], optional
+        The direction of the optimization. In "min" mode, training will
+        stop when the monitored quantity stops decreasing, in "max" mode
+        when it stops increasing. Default: "min".
     use_accelerator : bool, optional
         Whether to use an accelerator (CUDA or MPS) if it is available.
         Default: True.
@@ -485,6 +600,13 @@ def train_integration(
         Save the model state every `checkpoint` epochs, or only save the
         state of the final model with "final". The default None
         corresponds to not saving any checkpoints.
+    checkpoint_dir : Optional[Union[str, Path]], optional
+        Directory for saving checkpoints. Default: None (will save
+        checkpoints to the directory ./checkpoints if `checkpoint` is not
+        None).
+    logger : Optional[logging.Logger], optional
+        Logger instance for logging output. Default: None (uses logger
+        of this file).
 
     Returns
     -------
@@ -533,6 +655,11 @@ def train_integration(
             log.info(
                 f"Saving checkpoints every {checkpoint} epochs to directory {checkpoint_dir}."
             )
+
+    if early_stopping:
+        early_stopping_instance = EarlyStopping(
+            patience, delta, early_stopping_mode, log
+        )
 
     log.info(f"Using model of type {model.__class__.__name__}")
 
@@ -652,6 +779,11 @@ def train_integration(
                     checkpoint_dir
                     / f"checkpoint_e{epoch:0{floor(log10(num_epochs)) + 1}d}.tar",
                 )
+
+            # Check early stopping
+            if early_stopping:
+                if early_stopping_instance.should_stop(test_loss):
+                    break
 
         log.info("Finished model training.")
 

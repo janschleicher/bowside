@@ -14,6 +14,7 @@ import torch
 from sc_markov_ode.dataset import MarkovChainDataset, PseudotimeDataset
 from sc_markov_ode.model import GRNModel, GRNModelSDE
 from sc_markov_ode.training import (
+    EarlyStopping,
     integrate_model,
     qqloss,
     sinkhorn_loss,
@@ -32,6 +33,15 @@ Y_TRUE_SMALL = torch.tensor([[1, 1, 1, 1, 1, 3, 8, 8, 8, 8, 8]]).float()[
 Y_PRED_SMALL = torch.tensor([[3, 3, 3, 3, 3, 5, 6, 6, 6, 6, 6]]).float()[
     :, torch.randperm(11)
 ]
+
+LOSSES_MIN = torch.hstack([torch.linspace(1.0, 0.1, 10), torch.ones(20) * 0.1])
+LOSSES_MIN_DELTA = torch.hstack(
+    [torch.linspace(1.0, 0.1, 10), torch.linspace(0.095, 0.0, 20)]
+)
+LOSSES_MAX = torch.hstack([torch.linspace(0.0, 0.9, 10), torch.ones(20) * 0.9])
+LOSSES_MAX_DELTA = torch.hstack(
+    [torch.linspace(0.0, 0.9, 10), torch.linspace(0.905, 1.0, 20)]
+)
 
 OUT_DIR = Path("test_out/")
 
@@ -58,6 +68,47 @@ def prepare():
         .permute(1, 0, 2)
         .contiguous()
     )
+
+
+@pytest.mark.parametrize(
+    "patience, delta, mode, losses, expected_epochs",
+    [
+        (1, 0.0, "min", LOSSES_MIN, 11),
+        (5, 0.0, "min", LOSSES_MIN, 15),
+        (10, 0.0, "min", LOSSES_MIN, 20),
+        (5, 0.01, "min", LOSSES_MIN, 15),
+        (5, 0.0, "min", LOSSES_MIN_DELTA, 30),
+        (5, 0.1, "min", LOSSES_MIN_DELTA, 15),
+        (5, 0.0, "min", LOSSES_MAX, 6),
+        (5, 0.0, "max", LOSSES_MAX, 15),
+        (5, 0.0, "max", LOSSES_MAX_DELTA, 30),
+        (5, 0.1, "max", LOSSES_MAX_DELTA, 15),
+    ],
+)
+def test_early_stopping(
+    patience: int,
+    delta: float,
+    mode: Literal["min", "max"],
+    losses: torch.Tensor,
+    expected_epochs: int,
+):
+    early_stopping = EarlyStopping(patience=patience, delta=delta, mode=mode)
+    for epoch, loss_val in enumerate(losses):
+        should_stop = early_stopping.should_stop(loss_val.item())
+        if should_stop:
+            break
+    # Increment because iteration starts at 0
+    assert epoch + 1 == expected_epochs, (
+        f"Training should have stopped after {expected_epochs} epochs, but ended after {epoch + 1}."
+    )
+    if should_stop:
+        assert expected_epochs < losses.size(0), (
+            "The early stopping should have been triggered."
+        )
+    else:
+        assert expected_epochs == losses.size(0), (
+            "Training should have proceeded to the end."
+        )
 
 
 @pytest.mark.parametrize(
@@ -323,3 +374,25 @@ def test_training_exceptions():
         match="Incompatible dataset type. Use `MarkovChainDataset` or `PseudotimeDataset`.",
     ):
         train_integration(ADATA, model, optimizer, sinkhorn_loss)  # type: ignore
+
+    # Wrong parameters for early stopping
+    with pytest.raises(TypeError, match="Parameter `patience` should be int, was"):
+        train_integration(dataset, model, optimizer, sinkhorn_loss, patience=0.2)  # type: ignore
+    with pytest.raises(
+        ValueError, match="Parameter `patience` must be strictly positive."
+    ):
+        train_integration(dataset, model, optimizer, sinkhorn_loss, patience=-7)
+    with pytest.raises(TypeError, match="Parameter `delta` should be float, was"):
+        train_integration(dataset, model, optimizer, sinkhorn_loss, delta="wrong")  # type: ignore
+    with pytest.raises(ValueError, match="Parameter `delta` cannot be negative."):
+        train_integration(dataset, model, optimizer, sinkhorn_loss, delta=-0.1)
+    with pytest.raises(
+        ValueError, match="Parameter `mode` must be one of \\['min', 'max'\\]."
+    ):
+        train_integration(
+            dataset,
+            model,
+            optimizer,
+            sinkhorn_loss,
+            early_stopping_mode="loss",  # type: ignore
+        )
