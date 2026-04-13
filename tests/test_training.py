@@ -394,5 +394,5 @@ def test_training_exceptions():
             model,
             optimizer,
             sinkhorn_loss,
-            early_stopping_mode="loss",  # type: ignore
+            optimization_mode="loss",  # type: ignore
         )
