@@ -185,10 +185,12 @@ def test_loss_pseudotime_data(
     "constant_noise, dataset_type, checkpoint, checkpoint_dir, adjoint",
     [
         ["ode", None, 100, None, None, None, "markov", "final", OUT_DIR, False],
+        ["ode", None, 100, None, None, None, "markov", "best", OUT_DIR, False],
         ["ode", None, 100, None, None, None, "pseudo", None, None, True],
         ["ode", 100, 500, None, None, None, "markov", 1, OUT_DIR, False],
         ["ode", 100, 500, None, None, None, "pseudo", 1, None, False],
         ["sde", None, 100, True, True, True, "markov", "final", OUT_DIR, False],
+        ["sde", None, 100, True, True, True, "markov", "best", OUT_DIR, False],
         ["sde", None, 100, True, True, False, "markov", None, None, True],
         ["sde", None, 100, True, False, True, "markov", None, None, False],
         ["sde", None, 100, False, False, True, "markov", None, None, False],
@@ -202,7 +204,7 @@ def test_train_integration(
     fixed_sigma: bool,
     constant_noise: bool,
     dataset_type: Literal["markov", "pseudo"],
-    checkpoint: Optional[Union[int, Literal["final"]]],
+    checkpoint: Optional[Union[int, Literal["best", "final"]]],
     checkpoint_dir: Optional[Path],
     adjoint: bool,
 ):
@@ -321,7 +323,13 @@ def test_train_integration(
                     checkpoint_dir
                     / f"checkpoint_e{i:0{floor(log10(num_epochs)) + 1}d}.tar"
                 ), f"Checkpoint for epoch {i} is missing."
-        assert os.path.isfile(checkpoint_dir / "checkpoint_final_model.tar")
+        assert os.path.isfile(checkpoint_dir / "checkpoint_final_model.tar"), (
+            "Final model was not saved."
+        )
+        if checkpoint == "best":
+            assert os.path.isfile(checkpoint_dir / "checkpoint_best_model.tar"), (
+                "Best model was not saved."
+            )
         shutil.rmtree(checkpoint_dir)
 
 
