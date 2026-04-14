@@ -6,7 +6,7 @@ import pytest
 import scanpy as sc
 import torch
 
-from sc_markov_ode.sampling import MarkovSampler
+from bowside.sampling import MarkovSampler
 from tests.conftest import TEST_DATA_PATH
 
 

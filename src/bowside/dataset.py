@@ -11,7 +11,7 @@ from numpy.typing import NDArray
 from scipy import sparse
 from torch.utils.data import Dataset
 
-from sc_markov_ode.sampling import MarkovSampler
+from bowside.sampling import MarkovSampler
 
 
 class MarkovChainDataset(Dataset):

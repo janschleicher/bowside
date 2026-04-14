@@ -9,7 +9,7 @@ import torch
 from tqdm.auto import tqdm
 from tqdm.contrib.logging import logging_redirect_tqdm
 
-from sc_markov_ode.utils import check_transition_matrix
+from bowside.utils import check_transition_matrix
 
 log = logging.getLogger(__name__)
 

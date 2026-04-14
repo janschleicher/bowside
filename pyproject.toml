@@ -6,9 +6,9 @@ requires = [
 build-backend = "hatchling.build"
 
 [project]
-name = "sc_markov_ode"
+name = "bowside"
 dynamic = ["version"]
-description = "GRN inference from Markov chain simulations of cell sequences."
+description = "GRN-driven differential equation modeling of cell differentiation."
 readme = "README.md"
 license = { text = "GPL-3.0 license" }
 requires-python = ">=3.10"
@@ -48,7 +48,7 @@ dependencies = [
 ]
 
 [project.urls]
-Repository = "https://github.com/janschleicher/sc_markov_ode"
+Repository = "https://github.com/janschleicher/bowside"
 
 [project.optional-dependencies]
 dev = ["ruff", "pytest"]
@@ -124,7 +124,7 @@ line-ending = "auto"
 docstring-code-format = true
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/sc_markov_ode"]
+packages = ["src/bowside"]
 [tool.hatch.version]
 source = "vcs"
 

@@ -11,9 +11,9 @@ import scanpy as sc
 import scvelo as scv
 import torch
 
-from sc_markov_ode.dataset import MarkovChainDataset, PseudotimeDataset
-from sc_markov_ode.model import GRNModel, GRNModelSDE
-from sc_markov_ode.training import (
+from bowside.dataset import MarkovChainDataset, PseudotimeDataset
+from bowside.model import GRNModel, GRNModelSDE
+from bowside.training import (
     EarlyStopping,
     integrate_model,
     qqloss,

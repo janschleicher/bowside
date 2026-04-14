@@ -16,8 +16,8 @@ from torchsde import sdeint, sdeint_adjoint
 from tqdm.auto import tqdm
 from tqdm.contrib.logging import logging_redirect_tqdm
 
-from sc_markov_ode.dataset import MarkovChainDataset, PseudotimeDataset
-from sc_markov_ode.model import GRNModel, GRNModelSDE
+from bowside.dataset import MarkovChainDataset, PseudotimeDataset
+from bowside.model import GRNModel, GRNModelSDE
 
 
 class EarlyStopping:

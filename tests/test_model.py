@@ -3,7 +3,7 @@ from typing import Literal, Optional
 import pytest
 import torch
 
-from sc_markov_ode.model import GRNModel, GRNModelSDE
+from bowside.model import GRNModel, GRNModelSDE
 
 TEST_ADJ_MAT = torch.tensor(
     [

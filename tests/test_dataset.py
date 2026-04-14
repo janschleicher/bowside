@@ -7,7 +7,7 @@ import scanpy as sc
 import scvelo as scv
 from numpy.typing import NDArray
 
-from sc_markov_ode.dataset import MarkovChainDataset, PseudotimeDataset, VelocityDataset
+from bowside.dataset import MarkovChainDataset, PseudotimeDataset, VelocityDataset
 from tests.conftest import TEST_DATA_PATH
 
 

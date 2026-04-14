@@ -13,9 +13,9 @@ import torch
 from optuna.storages import JournalStorage
 from optuna.storages.journal import JournalFileBackend
 
-from sc_markov_ode.dataset import PseudotimeDataset
-from sc_markov_ode.model import GRNModelSDE
-from sc_markov_ode.training import (
+from bowside.dataset import PseudotimeDataset
+from bowside.model import GRNModelSDE
+from bowside.training import (
     NaNTensorError,
     qqloss,
     sinkhorn_loss,
