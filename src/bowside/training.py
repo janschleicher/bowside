@@ -356,6 +356,8 @@ def train_step_integration(
     model: GRNModel,
     optimizer: torch.optim.Optimizer,
     loss_func: LossFunction,
+    regularization: Optional[Literal["l1", "l2"]] = None,
+    regularization_strength: float = 0.1,
     time_points: Optional[torch.Tensor] = None,
     adjoint: bool = False,
     solver_method: Optional[str] = None,
@@ -381,6 +383,12 @@ def train_step_integration(
         PyTorch optimizer for model training.
     loss_func : LossFunction
         Loss function to optimize.
+    regularization : Optional[Literal["l1", "l2"]], optional
+        Regularization method for the adjacency method. Options are "l1"
+        and "l2". With the default, None, no regularization is applied.
+    regularization_strength : float, optional
+        Relative weight of the regularization term added to the loss if
+        `regularization` is not None. Default: 0.1.
     time_points : Optional[torch.Tensor], optional
         Time points to use for integration. Allows explicitly specifying
         the time points. Default: None.
@@ -434,6 +442,11 @@ def train_step_integration(
     loss = loss_func(pred.contiguous(), y.permute(1, 0, 2).contiguous(), **loss_kwargs)
     if loss.dim() >= 1:
         loss = loss.sum()
+    if regularization is not None:
+        if regularization == "l1":
+            loss += regularization_strength * (model.adj * model.adj_mask).abs().sum()
+        elif regularization == "l2":
+            loss += regularization_strength * (model.adj * model.adj_mask).pow(2).sum()
     loss.backward()
     optimizer.step()
     optimizer.zero_grad()
@@ -445,6 +458,8 @@ def test(
     y: torch.Tensor,
     model: GRNModel,
     loss_func: LossFunction,
+    regularization: Optional[Literal["l1", "l2"]] = None,
+    regularization_strength: float = 0.1,
     time_points: Optional[torch.Tensor] = None,
     solver_method: Optional[str] = None,
     dt: float = 0.001,
@@ -464,6 +479,12 @@ def test(
         The gene regulatory network model.
     loss_func : LossFunction
         Loss function to optimize.
+    regularization : Optional[Literal["l1", "l2"]], optional
+        Regularization method for the adjacency method. Options are "l1"
+        and "l2". With the default, None, no regularization is applied.
+    regularization_strength : float, optional
+        Relative weight of the regularization term added to the loss if
+        `regularization` is not None. Default: 0.1.
     time_points : Optional[torch.Tensor], optional
         Time points to use for integration. Allows explicitly specifying
         the time points. Default: None.
@@ -510,6 +531,17 @@ def test(
         )
         if loss.dim() >= 1:
             loss = loss.sum()
+
+        if regularization is not None:
+            if regularization == "l1":
+                loss += (
+                    regularization_strength * (model.adj * model.adj_mask).abs().sum()
+                )
+            elif regularization == "l2":
+                loss += (
+                    regularization_strength * (model.adj * model.adj_mask).pow(2).sum()
+                )
+
         return loss.item()
 
 
@@ -518,6 +550,8 @@ def train_integration(
     model: GRNModel,
     optimizer: torch.optim.Optimizer,
     loss_func: LossFunction,
+    regularization: Optional[Literal["l1", "l2"]] = None,
+    regularization_strength: float = 0.1,
     train_proportion: float = 0.8,
     batch_size: Optional[int] = None,
     num_epochs: int = 1000,
@@ -552,6 +586,12 @@ def train_integration(
         PyTorch optimizer for model training.
     loss_func : LossFunction
         Loss function to optimize.
+    regularization : Optional[Literal["l1", "l2"]], optional
+        Regularization method for the adjacency method. Options are "l1"
+        and "l2". With the default, None, no regularization is applied.
+    regularization_strength : float, optional
+        Relative weight of the regularization term added to the loss if
+        `regularization` is not None. Default: 0.1.
     train_proportion : float, optional
         Proportion of samples to use for training. Default: 0.8.
     batch_size : Optional[int], optional
@@ -682,6 +722,16 @@ def train_integration(
             "Incompatible dataset type. Use `MarkovChainDataset` or `PseudotimeDataset`."
         )
 
+    if regularization is not None:
+        if regularization not in ["l1", "l2"]:
+            raise ValueError(
+                "Invalid regularization option. Must be one of ['l1', 'l2']."
+            )
+    if not isinstance(regularization_strength, float):
+        raise TypeError("Parameter `regularization_strength` must be of type float.")
+    if regularization_strength < 0:
+        raise ValueError("Parameter `regularization_strength` must be positive.")
+
     train_length = floor(len(dataset) * train_proportion)
     trainset, testset = torch.utils.data.random_split(
         dataset, [train_length, len(dataset) - train_length]
@@ -728,6 +778,9 @@ def train_integration(
     if optimization_mode == "max":
         best_test_loss = -best_test_loss
         compare = operator.ge
+        regularization_strength = (
+            -regularization_strength
+        )  # subtract regularization instead of adding
     with logging_redirect_tqdm():
         for epoch in tqdm(range(num_epochs), desc="Training", unit="epoch"):
             # Training
@@ -739,6 +792,8 @@ def train_integration(
                     model=model,
                     optimizer=optimizer,
                     loss_func=loss_func,
+                    regularization=regularization,
+                    regularization_strength=regularization_strength,
                     time_points=time_points,
                     adjoint=adjoint,
                     solver_method=solver_method,
@@ -760,6 +815,8 @@ def train_integration(
                     y=y,
                     model=model,
                     loss_func=loss_func,
+                    regularization=regularization,
+                    regularization_strength=regularization_strength,
                     time_points=time_points,
                     solver_method=solver_method,
                     dt=dt,
