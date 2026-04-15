@@ -552,6 +552,7 @@ def train_integration(
     loss_func: LossFunction,
     regularization: Optional[Literal["l1", "l2"]] = None,
     regularization_strength: float = 0.1,
+    pruning_frequency: Optional[int] = 50,
     train_proportion: float = 0.8,
     batch_size: Optional[int] = None,
     num_epochs: int = 1000,
@@ -592,6 +593,10 @@ def train_integration(
     regularization_strength : float, optional
         Relative weight of the regularization term added to the loss if
         `regularization` is not None. Default: 0.1.
+    pruning_frequency : Optional[int], optional
+        If `regularization` is not None, remove edges with weight close
+        to 0 every `pruning_frequency` epochs. When set to None, edges
+        will not be pruned. Default: 50.
     train_proportion : float, optional
         Proportion of samples to use for training. Default: 0.8.
     batch_size : Optional[int], optional
@@ -731,6 +736,11 @@ def train_integration(
         raise TypeError("Parameter `regularization_strength` must be of type float.")
     if regularization_strength < 0:
         raise ValueError("Parameter `regularization_strength` must be positive.")
+    if pruning_frequency is not None:
+        if not isinstance(pruning_frequency, int):
+            raise TypeError("Parameter `pruning_frequency` must be of type int.")
+        if pruning_frequency <= 0:
+            raise ValueError("Parameter `pruning_frequency` must be positive.")
 
     train_length = floor(len(dataset) * train_proportion)
     trainset, testset = torch.utils.data.random_split(
@@ -783,6 +793,24 @@ def train_integration(
         )  # subtract regularization instead of adding
     with logging_redirect_tqdm():
         for epoch in tqdm(range(num_epochs), desc="Training", unit="epoch"):
+            # Prune edges close to 0
+            if regularization is not None and pruning_frequency is not None:
+                if epoch % pruning_frequency == 0:
+                    with torch.no_grad():
+                        model.adj_mask.copy_(
+                            model.adj_mask
+                            * ~torch.isclose(
+                                model.adj,
+                                torch.tensor(
+                                    0,
+                                    dtype=model.adj.dtype,
+                                    device=model.adj_mask.device,
+                                ),
+                                rtol=1e-3,
+                                atol=1e-5,
+                            )
+                        )
+                        model.adj.copy_(model.adj * model.adj_mask)
             # Training
             train_loss = 0.0
             for data in trainloader:

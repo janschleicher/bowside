@@ -340,11 +340,11 @@ def test_train_integration(
 
 
 @pytest.mark.parametrize(
-    "regularization",
-    [None, "l1", "l2"],
+    "regularization, pruning_frequency",
+    [[None, None], ["l1", None], ["l1", 2], ["l2", None]],
 )
 def test_train_integration_maximization(
-    regularization: Optional[Literal["l1", "l2"]],
+    regularization: Optional[Literal["l1", "l2"]], pruning_frequency: Optional[int]
 ):
     torch.manual_seed(42)
     dt = 0.1
@@ -429,6 +429,7 @@ def test_train_integration_maximization(
         qqloss_max,
         regularization=regularization,
         regularization_strength=regularization_strength,
+        pruning_frequency=pruning_frequency,
         num_epochs=num_epochs,
         optimization_mode="max",
         solver_method=solver_method,
@@ -575,4 +576,26 @@ def test_training_exceptions():
             sinkhorn_loss,
             regularization="l1",
             regularization_strength=-0.1,
+        )
+    with pytest.raises(
+        TypeError, match="Parameter `pruning_frequency` must be of type int."
+    ):
+        train_integration(
+            dataset,
+            model,
+            optimizer,
+            sinkhorn_loss,
+            regularization="l1",
+            pruning_frequency=0.5,  # type: ignore
+        )
+    with pytest.raises(
+        ValueError, match="Parameter `pruning_frequency` must be positive."
+    ):
+        train_integration(
+            dataset,
+            model,
+            optimizer,
+            sinkhorn_loss,
+            regularization="l1",
+            pruning_frequency=-5,
         )
