@@ -357,7 +357,7 @@ def train_step_integration(
     optimizer: torch.optim.Optimizer,
     loss_func: LossFunction,
     regularization: Optional[Literal["l1", "l2"]] = None,
-    regularization_strength: float = 0.1,
+    regularization_strength: float = 1e-4,
     time_points: Optional[torch.Tensor] = None,
     adjoint: bool = False,
     solver_method: Optional[str] = None,
@@ -459,7 +459,7 @@ def test(
     model: GRNModel,
     loss_func: LossFunction,
     regularization: Optional[Literal["l1", "l2"]] = None,
-    regularization_strength: float = 0.1,
+    regularization_strength: float = 1e-4,
     time_points: Optional[torch.Tensor] = None,
     solver_method: Optional[str] = None,
     dt: float = 0.001,
@@ -551,8 +551,10 @@ def train_integration(
     optimizer: torch.optim.Optimizer,
     loss_func: LossFunction,
     regularization: Optional[Literal["l1", "l2"]] = None,
-    regularization_strength: float = 0.1,
+    regularization_strength: float = 1e-4,
     pruning_frequency: Optional[int] = 50,
+    pruning_atol: float = 1e-3,
+    pruning_rtol: float = 1e-3,
     train_proportion: float = 0.8,
     batch_size: Optional[int] = None,
     num_epochs: int = 1000,
@@ -597,6 +599,10 @@ def train_integration(
         If `regularization` is not None, remove edges with weight close
         to 0 every `pruning_frequency` epochs. When set to None, edges
         will not be pruned. Default: 50.
+    pruning_atol : float, optional
+        Absolute threshold for pruning edges close to 0. Default: 1e-3.
+    pruning_rtol : float, optional
+        Relative threshold for pruning edges close to 0. Default: 1e-3.
     train_proportion : float, optional
         Proportion of samples to use for training. Default: 0.8.
     batch_size : Optional[int], optional
@@ -793,24 +799,6 @@ def train_integration(
         )  # subtract regularization instead of adding
     with logging_redirect_tqdm():
         for epoch in tqdm(range(num_epochs), desc="Training", unit="epoch"):
-            # Prune edges close to 0
-            if regularization is not None and pruning_frequency is not None:
-                if epoch % pruning_frequency == 0:
-                    with torch.no_grad():
-                        model.adj_mask.copy_(
-                            model.adj_mask
-                            * ~torch.isclose(
-                                model.adj,
-                                torch.tensor(
-                                    0,
-                                    dtype=model.adj.dtype,
-                                    device=model.adj_mask.device,
-                                ),
-                                rtol=1e-3,
-                                atol=1e-5,
-                            )
-                        )
-                        model.adj.copy_(model.adj * model.adj_mask)
             # Training
             train_loss = 0.0
             for data in trainloader:
@@ -858,6 +846,25 @@ def train_integration(
             log.debug(
                 f"Epoch {epoch}: training loss: {train_loss}, test loss: {test_loss}"
             )
+
+            # Prune edges close to 0
+            if regularization is not None and pruning_frequency is not None:
+                if epoch % pruning_frequency == 0:
+                    with torch.no_grad():
+                        model.adj_mask.copy_(
+                            model.adj_mask
+                            * ~torch.isclose(
+                                model.adj,
+                                torch.tensor(
+                                    0,
+                                    dtype=model.adj.dtype,
+                                    device=model.adj_mask.device,
+                                ),
+                                rtol=pruning_rtol,
+                                atol=pruning_atol,
+                            )
+                        )
+                        model.adj.copy_(model.adj * model.adj_mask)
 
             # Save checkpoint
             if isinstance(checkpoint, int) and epoch % checkpoint == 0:
