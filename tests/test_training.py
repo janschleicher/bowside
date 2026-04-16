@@ -181,23 +181,26 @@ def test_loss_pseudotime_data(
 
 
 @pytest.mark.parametrize(
-    "model_type, batch_size, num_sims, shared_sigma, fixed_sigma, "
+    "model_type, regularization, batch_size, num_sims, shared_sigma, fixed_sigma, "
     "constant_noise, dataset_type, checkpoint, checkpoint_dir, adjoint",
     [
-        ["ode", None, 100, None, None, None, "markov", "final", OUT_DIR, False],
-        ["ode", None, 100, None, None, None, "markov", "best", OUT_DIR, False],
-        ["ode", None, 100, None, None, None, "pseudo", None, None, True],
-        ["ode", 100, 500, None, None, None, "markov", 1, OUT_DIR, False],
-        ["ode", 100, 500, None, None, None, "pseudo", 1, None, False],
-        ["sde", None, 100, True, True, True, "markov", "final", OUT_DIR, False],
-        ["sde", None, 100, True, True, True, "markov", "best", OUT_DIR, False],
-        ["sde", None, 100, True, True, False, "markov", None, None, True],
-        ["sde", None, 100, True, False, True, "markov", None, None, False],
-        ["sde", None, 100, False, False, True, "markov", None, None, False],
+        ["ode", None, None, 100, None, None, None, "markov", "final", OUT_DIR, False],
+        ["ode", "l1", None, 100, None, None, None, "markov", "final", OUT_DIR, False],
+        ["ode", "l2", None, 100, None, None, None, "markov", "final", OUT_DIR, False],
+        ["ode", None, None, 100, None, None, None, "markov", "best", OUT_DIR, False],
+        ["ode", None, None, 100, None, None, None, "pseudo", None, None, True],
+        ["ode", None, 100, 500, None, None, None, "markov", 1, "test_out", False],
+        ["ode", None, 100, 500, None, None, None, "pseudo", 1, None, False],
+        ["sde", None, None, 100, True, True, True, "markov", "final", OUT_DIR, False],
+        ["sde", None, None, 100, True, True, True, "markov", "best", OUT_DIR, False],
+        ["sde", None, None, 100, True, True, False, "markov", None, None, True],
+        ["sde", None, None, 100, True, False, True, "markov", None, None, False],
+        ["sde", None, None, 100, False, False, True, "markov", None, None, False],
     ],
 )
 def test_train_integration(
     model_type: Literal["ode", "sde"],
+    regularization: Optional[Literal["l1", "l2"]],
     batch_size: int,
     num_sims: int,
     shared_sigma: bool,
@@ -281,6 +284,7 @@ def test_train_integration(
         model,
         optim,
         qqloss,
+        regularization=regularization,
         batch_size=batch_size,
         num_epochs=num_epochs,
         adjoint=adjoint,
@@ -316,6 +320,8 @@ def test_train_integration(
     if checkpoint is not None:
         if checkpoint_dir is None:
             checkpoint_dir = Path("./checkpoints")
+        elif isinstance(checkpoint_dir, str):
+            checkpoint_dir = Path(checkpoint_dir)
         assert checkpoint_dir.exists(), "Checkpoint directory was not created."
         if isinstance(checkpoint, int):
             for i in range(0, num_epochs, checkpoint):
@@ -331,6 +337,144 @@ def test_train_integration(
                 "Best model was not saved."
             )
         shutil.rmtree(checkpoint_dir)
+
+
+@pytest.mark.parametrize(
+    "regularization, pruning_frequency",
+    [[None, None], ["l1", None], ["l1", 2], ["l2", None]],
+)
+def test_train_integration_maximization(
+    regularization: Optional[Literal["l1", "l2"]], pruning_frequency: Optional[int]
+):
+    torch.manual_seed(42)
+    dt = 0.1
+    atol = 0.1
+    rtol = 0.1
+    solver_method = "adaptive_heun"
+    loss_metric = torch.nn.functional.mse_loss
+    regularization_strength = 0.1
+
+    # Select GPU if available
+    device = None
+    if torch.accelerator.is_available():
+        device = torch.accelerator.current_accelerator()
+    if not device:
+        device = torch.device("cpu")
+
+    # Setup dataset and model, with highly variable genes
+    adata = ADATA.copy()
+    n_genes = 10
+    sc.pp.highly_variable_genes(adata, n_top_genes=n_genes)
+    dataset = PseudotimeDataset(
+        adata,
+        num_cells=100,
+        mask_var="highly_variable",
+        pseudotime_key="velocity_pseudotime",
+    )
+
+    model = GRNModel(n_genes=dataset.n_genes())
+    model.to(device)
+
+    adj_pre = model.adj.clone().detach()
+
+    y = dataset[:].to(device)
+    y_pred = integrate_model(
+        y[:, 0, :],
+        model,
+        n_steps=y.shape[1],
+        solver_method=solver_method,
+        dt=dt,
+        atol=atol,
+        rtol=rtol,
+    )
+
+    # Invert loss function to test maximization
+    def qqloss_max(
+        y_pred: torch.Tensor,
+        y_true: torch.Tensor,
+        dim: int = 1,
+        n_quantiles: int = 100,
+        metric: Callable[
+            [torch.Tensor, torch.Tensor], torch.Tensor
+        ] = torch.nn.functional.mse_loss,
+        weight: Optional[torch.Tensor] = None,
+    ):
+        return -qqloss(
+            y_pred=y_pred,
+            y_true=y_true,
+            dim=dim,
+            n_quantiles=n_quantiles,
+            metric=metric,
+            weight=weight,
+        )
+
+    untrained_loss = qqloss_max(y_pred, y.permute(1, 0, 2), dim=1, metric=loss_metric)
+    if regularization is not None:
+        if regularization == "l1":
+            untrained_loss -= (
+                regularization_strength * (model.adj * model.adj_mask).abs().sum()
+            )
+        elif regularization == "l2":
+            untrained_loss -= (
+                regularization_strength * (model.adj * model.adj_mask).pow(2).sum()
+            )
+
+    optim = torch.optim.Adam(model.parameters(), maximize=True)
+    num_epochs = 5
+
+    _, _ = train_integration(
+        dataset,
+        model,
+        optim,
+        qqloss_max,
+        regularization=regularization,
+        regularization_strength=regularization_strength,
+        pruning_frequency=pruning_frequency,
+        num_epochs=num_epochs,
+        optimization_mode="max",
+        solver_method=solver_method,
+        dt=dt,
+        atol=atol,
+        rtol=rtol,
+        loss_kwargs={"metric": loss_metric, "dim": 1},
+        checkpoint="best",
+    )
+
+    y_pred = integrate_model(
+        y[:, 1, :],
+        model,
+        n_steps=y.shape[1],
+        solver_method=solver_method,
+        dt=dt,
+        atol=atol,
+        rtol=rtol,
+    )
+    trained_loss = qqloss_max(y_pred, y.permute(1, 0, 2), dim=1, metric=loss_metric)
+    if regularization is not None:
+        if regularization == "l1":
+            trained_loss -= (
+                regularization_strength * (model.adj * model.adj_mask).abs().sum()
+            )
+        elif regularization == "l2":
+            trained_loss -= (
+                regularization_strength * (model.adj * model.adj_mask).pow(2).sum()
+            )
+
+    # Weak checks that training did something
+    assert trained_loss >= untrained_loss, (
+        f"Training should increase the target; before: {untrained_loss}, after: {trained_loss}."
+    )
+    assert torch.any(model.adj != adj_pre), (
+        "Training should change the adjacency matrix."
+    )
+
+    # Check if model was saved
+    checkpoint_dir = Path("./checkpoints")
+    assert checkpoint_dir.exists(), "Checkpoint directory was not created."
+    assert os.path.isfile(checkpoint_dir / "checkpoint_best_model.tar"), (
+        "Best model was not saved."
+    )
+    shutil.rmtree(checkpoint_dir)
 
 
 def test_training_exceptions():
@@ -403,4 +547,55 @@ def test_training_exceptions():
             optimizer,
             sinkhorn_loss,
             optimization_mode="loss",  # type: ignore
+        )
+
+    # Wrong regularization
+    with pytest.raises(
+        ValueError,
+        match="Invalid regularization option. Must be one of \\['l1', 'l2'\\]",
+    ):
+        train_integration(dataset, model, optimizer, sinkhorn_loss, regularization="l3")  # type: ignore
+    with pytest.raises(
+        TypeError, match="Parameter `regularization_strength` must be of type float."
+    ):
+        train_integration(
+            dataset,
+            model,
+            optimizer,
+            sinkhorn_loss,
+            regularization="l1",
+            regularization_strength="1",  # type: ignore
+        )
+    with pytest.raises(
+        ValueError, match="Parameter `regularization_strength` must be positive."
+    ):
+        train_integration(
+            dataset,
+            model,
+            optimizer,
+            sinkhorn_loss,
+            regularization="l1",
+            regularization_strength=-0.1,
+        )
+    with pytest.raises(
+        TypeError, match="Parameter `pruning_frequency` must be of type int."
+    ):
+        train_integration(
+            dataset,
+            model,
+            optimizer,
+            sinkhorn_loss,
+            regularization="l1",
+            pruning_frequency=0.5,  # type: ignore
+        )
+    with pytest.raises(
+        ValueError, match="Parameter `pruning_frequency` must be positive."
+    ):
+        train_integration(
+            dataset,
+            model,
+            optimizer,
+            sinkhorn_loss,
+            regularization="l1",
+            pruning_frequency=-5,
         )

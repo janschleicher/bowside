@@ -100,6 +100,33 @@ class GRNModel(torch.nn.Module):
             - self.log_decay_rate.exp() * x
         )
 
+    def prune(self, atol: float = 1e-3, rtol: float = 1e-3):
+        """
+        Prune edges with a weight close to 0.
+
+        Parameters
+        ----------
+        atol : float, optional
+            Absolute threshold for pruning edges close to 0. Default: 1e-3.
+        rtol : float, optional
+            Relative threshold for pruning edges close to 0. Default: 1e-3.
+        """
+        with torch.no_grad():
+            self.adj_mask.copy_(
+                self.adj_mask
+                * ~torch.isclose(
+                    self.adj,
+                    torch.tensor(
+                        0,
+                        dtype=self.adj.dtype,
+                        device=self.adj_mask.device,
+                    ),
+                    rtol=rtol,
+                    atol=atol,
+                )
+            )
+            self.adj.copy_(self.adj * self.adj_mask)
+
 
 class GRNModelSDE(GRNModel):
     """
