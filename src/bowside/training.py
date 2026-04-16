@@ -458,8 +458,6 @@ def test(
     y: torch.Tensor,
     model: GRNModel,
     loss_func: LossFunction,
-    regularization: Optional[Literal["l1", "l2"]] = None,
-    regularization_strength: float = 1e-4,
     time_points: Optional[torch.Tensor] = None,
     solver_method: Optional[str] = None,
     dt: float = 0.001,
@@ -479,12 +477,6 @@ def test(
         The gene regulatory network model.
     loss_func : LossFunction
         Loss function to optimize.
-    regularization : Optional[Literal["l1", "l2"]], optional
-        Regularization method for the adjacency method. Options are "l1"
-        and "l2". With the default, None, no regularization is applied.
-    regularization_strength : float, optional
-        Relative weight of the regularization term added to the loss if
-        `regularization` is not None. Default: 0.1.
     time_points : Optional[torch.Tensor], optional
         Time points to use for integration. Allows explicitly specifying
         the time points. Default: None.
@@ -531,16 +523,6 @@ def test(
         )
         if loss.dim() >= 1:
             loss = loss.sum()
-
-        if regularization is not None:
-            if regularization == "l1":
-                loss += (
-                    regularization_strength * (model.adj * model.adj_mask).abs().sum()
-                )
-            elif regularization == "l2":
-                loss += (
-                    regularization_strength * (model.adj * model.adj_mask).pow(2).sum()
-                )
 
         return loss.item()
 
@@ -831,8 +813,6 @@ def train_integration(
                     y=y,
                     model=model,
                     loss_func=loss_func,
-                    regularization=regularization,
-                    regularization_strength=regularization_strength,
                     time_points=time_points,
                     solver_method=solver_method,
                     dt=dt,
@@ -850,21 +830,7 @@ def train_integration(
             # Prune edges close to 0
             if regularization is not None and pruning_frequency is not None:
                 if epoch % pruning_frequency == 0:
-                    with torch.no_grad():
-                        model.adj_mask.copy_(
-                            model.adj_mask
-                            * ~torch.isclose(
-                                model.adj,
-                                torch.tensor(
-                                    0,
-                                    dtype=model.adj.dtype,
-                                    device=model.adj_mask.device,
-                                ),
-                                rtol=pruning_rtol,
-                                atol=pruning_atol,
-                            )
-                        )
-                        model.adj.copy_(model.adj * model.adj_mask)
+                    model.prune(atol=pruning_atol, rtol=pruning_rtol)
 
             # Save checkpoint
             if isinstance(checkpoint, int) and epoch % checkpoint == 0:
@@ -898,6 +864,11 @@ def train_integration(
                     break
 
         log.info("Finished model training.")
+
+        # Prune edges close to 0
+        if regularization is not None and pruning_frequency is not None:
+            log.info("Final pruning step of edges with weight close to 0.")
+            model.prune(atol=pruning_atol, rtol=pruning_rtol)
 
         # Save final model
         if checkpoint is not None:
