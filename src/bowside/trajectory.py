@@ -102,21 +102,22 @@ def infer_trajectories(
         An error is raised if an invalid value for `trajectory_mode` is
         passed.
     """
-    # Data setup
-    y = dataset[:]
-    y0 = y[:, 0, :]
-
     time_points = None
     n_steps = None
-    if isinstance(dataset, PseudotimeDataset):
-        time_points = dataset.time_points
-    elif isinstance(dataset, MarkovChainDataset):
-        n_steps = y.shape[1]
-    else:
+    if not isinstance(dataset, (PseudotimeDataset, MarkovChainDataset)):
         raise TypeError(
             f"Invalid dataset type: {type(dataset)}. Must be one of "
             f"[MarkovChainDataset, PseudotimeDataset]."
         )
+
+    # Data setup
+    y = dataset[:]
+    y0 = y[:, 0, :]
+
+    if isinstance(dataset, PseudotimeDataset):
+        time_points = dataset.time_points
+    elif isinstance(dataset, MarkovChainDataset):
+        n_steps = y.shape[1]
 
     # Argument checks
     skip_clustering = False
