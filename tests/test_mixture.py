@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from bowside.mixture import GaussianMixture
+from bowside.mixture import GaussianMixture, GaussianMixtureTimeseries
 
 
 def test_gaussian_mixture():
@@ -136,3 +136,115 @@ def test_gaussian_mixture_exceptions():
                 dtype=float,
             ),
         )
+
+
+def test_gaussian_mixture_timeseries():
+    sequences = np.array(
+        [
+            [[0.0, 0.0], [0.2, 0.1], [0.1, 0.3], [2.0, 2.0], [2.2, 2.1], [1.9, 2.3]],
+            [[1.0, 1.0], [1.2, 1.1], [1.1, 1.3], [3.0, 3.0], [3.2, 3.1], [2.9, 3.3]],
+        ],
+        dtype=float,
+    )
+    time_points = np.array([0.0, 1.0], dtype=float)
+    cluster_labels = np.array([0, 0, 0, 1, 1, 1], dtype=int)
+
+    model = GaussianMixtureTimeseries(
+        sequences=sequences,
+        time_points=time_points,
+        cluster_labels=cluster_labels,
+    )
+
+    # Check model attributes
+    assert model.n_components == 2, "The model should discover two components."
+    assert model.time_points.tolist() == [0.0, 1.0], "Time points should be sorted."
+    assert model.weights.shape == (2,), "Weights should have one value per component."
+    assert np.isclose(model.weights.sum(), 1.0), "Weights should sum to 1.0."
+    assert model.means.shape == (2, 2, 2), (
+        "Means should track components and time points."
+    )
+    assert model.covariances.shape == (2, 2, 2, 2), (
+        "Covariances should track components and time points."
+    )
+    assert len(model.gaussian_mixtures) == 2, (
+        "There should be one mixture per time point."
+    )
+
+    # Check PDFs
+    samples = [[0.1, 0.05], [2.1, 2.05], [1.1, 1.2]]
+    sample_time_points = [0.0, 0.0, 1.0]
+    component_pdfs = model.component_pdfs(samples, sample_time_points)
+    assert component_pdfs.shape == (3, 2), (
+        "Component PDFs should match samples and components."
+    )
+    component_pdfs_single = model.component_pdfs(samples[0], sample_time_points[0])
+    assert component_pdfs_single.shape == (1, 2), (
+        "Single-sample PDFs should still be 2D."
+    )
+
+    # Check component probabilities
+    probabilities = model.predict_proba(samples, sample_time_points)
+    assert probabilities.shape == (3, 2), (
+        "Probabilities should match samples and components."
+    )
+    assert np.allclose(probabilities.sum(axis=1), 1.0), (
+        "Probabilities should sum to 1.0 per sample."
+    )
+    assert np.all(probabilities.argmax(axis=1) == np.asarray([0, 1, 0])), (
+        "Probabilities should be higher for the component closer to the sample."
+    )
+
+    # Check scores
+    scores = model.score_samples(samples, sample_time_points)
+    assert scores.shape == (3,), "Scores should be returned per sample."
+    assert scores[0] > scores[1], (
+        "The first sample should score higher near its cluster."
+    )
+
+    # Check exceptions
+    with pytest.raises(
+        ValueError,
+        match="Parameter `sequences` must be 3-dimensional with shape "
+        "\\(n_steps, n_sequences, n_var\\).",
+    ):
+        GaussianMixtureTimeseries(
+            sequences=sequences[0, :, :],
+            time_points=time_points,
+            cluster_labels=cluster_labels,
+        )
+    with pytest.raises(
+        ValueError, match="Parameter `time_points` must be 1-dimensional"
+    ):
+        GaussianMixtureTimeseries(
+            sequences=sequences,
+            time_points=np.array([[0.0, 1.0]], dtype=float),
+            cluster_labels=cluster_labels,
+        )
+    with pytest.raises(
+        ValueError, match="Parameter `cluster_labels` must be 1-dimensional."
+    ):
+        GaussianMixtureTimeseries(
+            sequences=sequences,
+            time_points=time_points,
+            cluster_labels=cluster_labels[None, :],
+        )
+    with pytest.raises(
+        ValueError, match="Shape mismatch between `time_points` and `sequences`."
+    ):
+        GaussianMixtureTimeseries(
+            sequences=sequences,
+            time_points=[0.0, 0.5, 1.0],
+            cluster_labels=cluster_labels,
+        )
+    with pytest.raises(
+        ValueError, match="Shape mismatch between `sequences` and `cluster_labels`."
+    ):
+        GaussianMixtureTimeseries(
+            sequences=sequences,
+            time_points=time_points,
+            cluster_labels=cluster_labels[:-1],
+        )
+    with pytest.raises(
+        ValueError, match="Mismatching number of samples and time points."
+    ):
+        model.component_pdfs(samples, [0.0, 1.0])
