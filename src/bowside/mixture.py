@@ -151,6 +151,8 @@ class GaussianMixtureTimeseries:
     cluster_labels : np.typing.ArrayLike
         An array of shape (n_sequences). The value at index i is the
         cluster number to which sequence i belongs.
+    allow_singular : bool, optional
+        Whether to allow a singular covariance matrix. Default: False.
 
     Raises
     ------
@@ -163,6 +165,7 @@ class GaussianMixtureTimeseries:
         sequences: np.typing.ArrayLike,
         time_points: np.typing.ArrayLike,
         cluster_labels: np.typing.ArrayLike,
+        allow_singular: bool = False,
     ) -> None:
         sequences = np.asarray(sequences)
         time_points = np.asarray(time_points)
@@ -217,7 +220,10 @@ class GaussianMixtureTimeseries:
         # Generate Gaussian mixtures
         self.gaussian_mixtures = [
             GaussianMixture(
-                self.weights, self.means[:, t, :], self.covariances[:, t, :, :]
+                self.weights,
+                self.means[:, t, :],
+                self.covariances[:, t, :, :],
+                allow_singular=allow_singular,
             )
             for t in range(time_points.shape[0])
         ]
