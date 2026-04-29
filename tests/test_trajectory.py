@@ -2,14 +2,11 @@ from typing import Literal
 
 import numpy as np
 import pytest
-import scanpy as sc
-import scvelo as scv
 import torch
 
-from bowside.dataset import BifurcatingDataset, PseudotimeDataset
+from bowside.dataset import BifurcatingMarkovChainDataset, BifurcatingPseudotimeDataset
 from bowside.model import GRNModelSDE
 from bowside.trajectory import infer_trajectories
-from tests.conftest import TEST_DATA_PATH
 
 Y0_BALANCED = torch.tensor([[0.0, 0.0]]).repeat(500, 1)
 Y0_IMBALANCED = torch.tensor([[0.0, 0.3]]).repeat(500, 1)
@@ -29,7 +26,7 @@ def test_trajectory_inference(
         "single", "complete", "average", "weighted", "centroid", "median", "ward"
     ],
 ):
-    dataset = BifurcatingDataset(y0)
+    dataset = BifurcatingPseudotimeDataset(y0)
     model = dataset.sde
     infer_trajectories(
         dataset,
@@ -106,7 +103,7 @@ def test_trajectory_inference(
 
 @pytest.mark.parametrize("min_clusters, max_clusters", [(1, 1), (2, 3), (1, 6), (2, 2)])
 def test_trajectory_inference_cluster_ranges(min_clusters: int, max_clusters: int):
-    dataset = BifurcatingDataset(Y0_BALANCED)
+    dataset = BifurcatingMarkovChainDataset(Y0_BALANCED)
     model = dataset.sde
     infer_trajectories(
         dataset,
@@ -171,16 +168,14 @@ def test_trajectory_inference_cluster_ranges(min_clusters: int, max_clusters: in
     ), "Mismatch between number of trajectories and trajectory coordinates array shape."
 
 
-def test_trajectory_inference_pseudotime_dataset():
-    adata = sc.read_h5ad(TEST_DATA_PATH)
-    scv.tl.velocity_pseudotime(adata)
-    dataset = PseudotimeDataset(adata, pseudotime_key="velocity_pseudotime")
+def test_trajectory_inference_markov_chain_dataset():
+    dataset = BifurcatingMarkovChainDataset(Y0_BALANCED)
     model = GRNModelSDE(n_genes=dataset.n_genes())
     infer_trajectories(dataset, model, min_clusters=2, max_clusters=3, dt=0.01)
 
 
 def test_trajectory_inference_exceptions():
-    dataset = BifurcatingDataset(Y0_BALANCED)
+    dataset = BifurcatingPseudotimeDataset(Y0_BALANCED)
     model = dataset.sde
     with pytest.raises(TypeError, match="Invalid dataset type"):
         infer_trajectories(dataset.adata, model, dt=0.1)  # type: ignore
