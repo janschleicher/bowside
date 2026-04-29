@@ -209,3 +209,19 @@ class GRNModelSDE(GRNModel):
             return sigma
         else:
             return sigma * x
+
+
+class BifurcatingSDE(GRNModelSDE):
+    """
+    Dummy SDE generating a bifurcating system with two genes.
+    """
+
+    def __init__(self):
+        super().__init__(2)
+        adj = torch.tensor([[2, -2.0], [-2.0, 2.0]])
+        bias = torch.tensor([1.0, 1.0])
+        decay_rate = torch.tensor([0.6, 0.6])
+        with torch.no_grad():
+            self.adj.copy_(adj.float())
+            self.log_bias.copy_(torch.log(bias.float()))
+            self.log_decay_rate.copy_(torch.log(decay_rate.float()))

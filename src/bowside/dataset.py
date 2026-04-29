@@ -11,6 +11,7 @@ from numpy.typing import NDArray
 from scipy import sparse
 from torch.utils.data import Dataset
 
+from bowside.model import BifurcatingSDE
 from bowside.sampling import MarkovSampler
 
 
@@ -321,3 +322,32 @@ class VelocityDataset(Dataset):
 
     def n_genes(self):
         return len(self.gene_names)
+
+
+class BifurcatingDataset(MarkovChainDataset):
+    """
+    Dummy dataset simulating an SDE with a defined adjacency matrix
+    instead of using a single-cell dataset.
+    """
+
+    def __init__(self, y0: torch.Tensor):
+        from bowside.training import integrate_model
+
+        self.sde = BifurcatingSDE()
+        n_steps = 50
+        self.time_points = torch.linspace(
+            0, n_steps - 1, n_steps, dtype=torch.float32, device=y0.device
+        )
+        self.simulations = integrate_model(
+            y0, self.sde, time_points=self.time_points, dt=0.1
+        ).permute((1, 0, 2))
+        self.adata = ad.AnnData()
+        self.gene_names = pd.Index(
+            [f"gene_{i}" for i in range(self.simulations.size(2))]
+        )
+
+    def __len__(self):
+        return self.simulations.shape[0]
+
+    def __getitem__(self, idx):
+        return self.simulations[idx, :, :]
