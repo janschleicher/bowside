@@ -6,7 +6,7 @@ import torch
 
 from bowside.dataset import BifurcatingMarkovChainDataset, BifurcatingPseudotimeDataset
 from bowside.model import GRNModelSDE
-from bowside.trajectory import infer_trajectories
+from bowside.trajectory import infer_cell_fates, infer_trajectories
 
 Y0_BALANCED = torch.tensor([[0.0, 0.0]]).repeat(500, 1)
 Y0_IMBALANCED = torch.tensor([[0.0, 0.3]]).repeat(500, 1)
@@ -197,3 +197,86 @@ def test_trajectory_inference_exceptions():
         NotImplementedError, match="Trajectory mode .+ is not implemented."
     ):
         infer_trajectories(dataset, model, trajectory_mode="max", dt=0.1)  # type: ignore
+
+
+@pytest.mark.parametrize(
+    "n_clusters, score_threshold",
+    [(2, 0.0), (1, 0.0), (3, 0.0), (2, 0.95)],
+)
+def test_fate_inference(n_clusters: int, score_threshold: float):
+    dataset = BifurcatingPseudotimeDataset(Y0_BALANCED)
+    model = GRNModelSDE(n_genes=dataset.n_genes())
+    infer_trajectories(
+        dataset, model, min_clusters=n_clusters, max_clusters=n_clusters, dt=0.01
+    )
+    infer_cell_fates(dataset, score_threshold=score_threshold)
+
+    # Check presence/absence of results, depending on number of trajectories
+    if n_clusters == 1:
+        assert "bowside_cell_scores" not in dataset.adata.obs.columns, (
+            "Cell should not be scored with only 1 trajectory."
+        )
+        assert "bowside_fate_probabilities" not in dataset.adata.obsm, (
+            "Fate probabilities should not be computed with only 1 trajectory."
+        )
+        assert "bowside_fate_entropy" not in dataset.adata.obs.columns, (
+            "Fate entropies should not be computed with only 1 trajectory."
+        )
+        return
+    assert "bowside_cell_scores" in dataset.adata.obs.columns, (
+        "Cell scores are missing."
+    )
+    assert "bowside_fate_probabilities" in dataset.adata.obsm, (
+        "Fate probabilities are missing."
+    )
+    assert "bowside_fate_entropy" in dataset.adata.obs.columns, (
+        "Fate entropies are missing."
+    )
+
+    # Check inferred probabilities
+    probabilities = dataset.adata.obsm["bowside_fate_probabilities"]
+    assert probabilities.shape == (len(dataset.adata), n_clusters), (
+        "Probabilities have wrong shape."
+    )
+    unassigned_cells = np.isnan(probabilities).any(axis=1)
+    assert np.allclose(np.sum(probabilities[~unassigned_cells, :], axis=1), 1.0), (
+        "Probabilities should sum to 1 for all cells."
+    )
+    assert (unassigned_cells.sum() > 0) == (score_threshold > 0.9), (
+        f"There schould{' not' if score_threshold == 0 else ''} be "
+        f"unassigned cells at threshold {score_threshold}."
+    )
+
+
+def test_fate_inference_exceptions():
+    dataset = BifurcatingMarkovChainDataset(Y0_BALANCED)
+    with pytest.raises(
+        NotImplementedError,
+        match="Cell fate inference not yet implemented for `MarkovChainDataset`.",
+    ):
+        infer_cell_fates(dataset)
+
+    dataset = BifurcatingPseudotimeDataset(Y0_BALANCED)
+    with pytest.raises(TypeError, match="Invalid dataset type:"):
+        infer_cell_fates(dataset.adata)  # type: ignore
+
+    with pytest.raises(
+        KeyError,
+        match="Trajectory inference results not found in `dataset.adata.uns`. Run "
+        "`bowside.trajectory.infer_trajectories` first.",
+    ):
+        infer_cell_fates(dataset)
+
+    dataset.adata.uns["bowside"] = {}
+    with pytest.raises(
+        ValueError, match="Parameter `score_threshold` must be between 0 and 1."
+    ):
+        infer_cell_fates(dataset, score_threshold=1.5)
+    with pytest.raises(
+        ValueError, match="Parameter `score_threshold` must be between 0 and 1."
+    ):
+        infer_cell_fates(dataset, score_threshold=-0.2)
+    with pytest.raises(
+        TypeError, match="Parameter `score_threshold` should be of type float"
+    ):
+        infer_cell_fates(dataset, score_threshold="0.2")  # type: ignore

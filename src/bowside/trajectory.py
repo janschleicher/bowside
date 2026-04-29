@@ -1,3 +1,5 @@
+"""Module for trajectory inference from a trained dynamic GRN model."""
+
 import logging
 from typing import Literal, Optional, Union
 
@@ -5,9 +7,11 @@ import numpy as np
 import torch
 from scipy.cluster.hierarchy import fcluster, linkage
 from scipy.spatial.distance import pdist, squareform
+from scipy.stats import entropy
 from sklearn.metrics import silhouette_score
 
 from bowside.dataset import MarkovChainDataset, PseudotimeDataset
+from bowside.mixture import GaussianMixtureTimeseries
 from bowside.model import GRNModel
 from bowside.training import integrate_model
 
@@ -69,7 +73,7 @@ def infer_trajectories(
 
     Returns
     -------
-    Returns `None`. Sets the following fields in `adata.uns`:
+    Returns `None`. Sets the following fields in `dataset.adata.uns`:
 
     `adata.uns["bowside"]["simulations"]` : :class:`numpy.ndarray`
         Array of shape (n_steps, n_simulations, n_var) containing gene
@@ -215,3 +219,107 @@ def infer_trajectories(
         elif trajectory_mode == "median":
             trajectories[i] = np.median(cluster_sequences, axis=1)
     adata.uns["bowside"]["trajectories"] = trajectories
+
+
+def infer_cell_fates(
+    dataset: Union[MarkovChainDataset, PseudotimeDataset],
+    score_threshold: float = 0.0,
+    allow_singular_covariance: bool = True,
+):
+    """
+    Infer the cell fate probabilities based on inferred gene expression
+    trajectories.
+
+    Parameters
+    ----------
+    dataset : Union[MarkovChainDataset, PseudotimeDataset]
+        Dataset to use for inferring cell fates.
+    score_threshold : float, optional
+        Threshold for the likelihood of a cell given the trajectories.
+        Cells with a score below the threshold will not be assigned fate
+        probabilities. Default: 0.0
+    allow_singular_covariance : bool, optional
+        Whether to allow singular covariance matrices for the Gaussian
+        mixture models. Default: False.
+
+    Returns
+    -------
+    Returns `None`. Sets the following fields in `dataset.adata.uns`:
+
+    `adata.obs["bowside_cell_scores"] : :class:`pandas.Series`
+        Likelihood under the Gaussian mixture model of the respective
+        time point for each cell.
+    `adata.obsm["bowside_fate_probabilities"] : :class:`numpy.ndarray`
+        Array of shape (n_obs, n_trajectories) containing trajectory
+        fate probabilities for each cell.
+    `adata.obs["bowside_fate_entropy"] : :class:`pandas.Series`
+        Entropy of fate probabilities for each cell. A higher value
+        indicates higher differentiation potential.
+
+    Raises
+    ------
+    TypeError
+        An error is raised if `dataset` or `score_threshold` is of the
+        wrong type.
+    NotImplementedError
+        An error is raised if a `MarkovChainDataset` is used. So far,
+        this is only implemented for `PseudotimeDataset`.
+    ValueError
+        An error is raised if `score_threshold` is not between 0 and 1.
+    KeyError
+        An error is raised if the trajectory inference results are not
+        available.
+    """
+    # Check dataset type
+    if not isinstance(dataset, (MarkovChainDataset, PseudotimeDataset)):
+        raise TypeError(
+            f"Invalid dataset type: {type(dataset)}. Must be one of "
+            f"[MarkovChainDataset, PseudotimeDataset]."
+        )
+    elif isinstance(dataset, MarkovChainDataset):
+        raise NotImplementedError(
+            "Cell fate inference not yet implemented for `MarkovChainDataset`."
+        )
+
+    if isinstance(score_threshold, float):
+        if score_threshold < 0.0 or score_threshold > 1.0:
+            raise ValueError("Parameter `score_threshold` must be between 0 and 1.")
+    else:
+        raise TypeError(
+            f"Parameter `score_threshold` should be of type float, was {type(score_threshold)}."
+        )
+
+    # Check if trajectory inference was run
+    if "bowside" not in dataset.adata.uns:
+        raise KeyError(
+            "Trajectory inference results not found in `dataset.adata.uns`. Run "
+            "`bowside.trajectory.infer_trajectories` first."
+        )
+
+    trajectory_inference_results = dataset.adata.uns["bowside"]
+    num_trajectories = trajectory_inference_results["num_trajectories"]
+    if num_trajectories == 1:
+        log.warning("Only one trajectory was inferred. Skipping fate prediction.")
+        return
+
+    # Create Gaussian mixture time series
+    time_points = dataset.time_points.detach().cpu().numpy()
+    gm_time_series = GaussianMixtureTimeseries(
+        trajectory_inference_results["simulations"],
+        time_points,
+        trajectory_inference_results["trajectory_inference_clusters"],
+        allow_singular=allow_singular_covariance,
+    )
+    sample_time_points = dataset.pseudotime.detach().cpu().numpy()
+    samples = dataset.X.detach().cpu().numpy()
+    fate_probabilities = gm_time_series.predict_proba(samples, sample_time_points)
+
+    # Compute score for each cell given the Gaussian mixture time series
+    cell_scores = np.exp(gm_time_series.score_samples(samples, sample_time_points))
+    dataset.adata.obs["bowside_cell_scores"] = cell_scores
+    remove_cells = cell_scores < score_threshold
+    fate_probabilities[remove_cells, :] = np.nan
+    dataset.adata.obsm["bowside_fate_probabilities"] = fate_probabilities
+    entropies = entropy(fate_probabilities, axis=1)
+    assert isinstance(entropies, np.ndarray)
+    dataset.adata.obs["bowside_fate_entropy"] = entropies
