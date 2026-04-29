@@ -369,9 +369,7 @@ class BifurcatingPseudotimeDataset(PseudotimeDataset):
             y0, self.sde, time_points=self.time_points, dt=0.1
         ).permute((1, 0, 2))
         self.X = simulations.reshape(-1, simulations.shape[-1])
-        self.pseudotime = pd.Series(
-            self.time_points.detach().cpu().numpy().repeat(simulations.shape[1])
-        )
+        self.pseudotime = self.time_points.repeat_interleave(simulations.shape[1])
         self.sampled_cells = torch.arange(self.X.shape[0]).reshape(
             simulations.shape[0], simulations.shape[1]
         )
