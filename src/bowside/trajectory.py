@@ -224,7 +224,7 @@ def infer_trajectories(
 def infer_cell_fates(
     dataset: Union[MarkovChainDataset, PseudotimeDataset],
     score_threshold: float = 0.0,
-    allow_singular_covariance: bool = True,
+    allow_singular_covariance: bool = False,
 ):
     """
     Infer the cell fate probabilities based on inferred gene expression
