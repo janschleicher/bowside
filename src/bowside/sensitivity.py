@@ -231,11 +231,11 @@ def simulate_all_knockouts(
         Array of shape (n_steps, n_simulations, n_var) containing gene
         expression simulations from the trained model for single-gene
         knockouts of all genes in `dataset`.
-    `adata.uns["bowside"]["global_knockout_effects"] : :class:`pandas.Series`
+    `adata.uns["bowside"]["sensitivity"]["global_knockout_effects"] : :class:`pandas.Series`
         Series of length n_var containing the loss function values between
         knockout and wild type simulations as a measure of the global
         effect of the single-gene knockouts of all genes in `dataset`.
-    `adata.uns["bowside"]["edge_specific_knockout_effects"] : :class:`pandas.DataFrame`
+    `adata.uns["bowside"]["sensitivity"]["edge_specific_knockout_effects"] : :class:`pandas.DataFrame`
         DataFrame of shape (n_var, n_var) containing the gene-wise loss
         function values between knockout and wild type simulations as a
         measure of the edge-speficic effects of the single-gene knockouts
