@@ -39,6 +39,7 @@ dependencies = [
     "matplotlib",
     "seaborn",
     "networkx",
+    "scikit-learn",
     "scanpy>=1.10",
     "scvelo",
     "torch",

@@ -11,6 +11,7 @@ from numpy.typing import NDArray
 from scipy import sparse
 from torch.utils.data import Dataset
 
+from bowside.model import BifurcatingSDE
 from bowside.sampling import MarkovSampler
 
 
@@ -179,6 +180,10 @@ class PseudotimeDataset(Dataset):
     """Sampled cell indices of shape (num_cells, len(self.time_points))."""
     gene_names: pd.Index
     """Gene names index of shape (n_genes,)."""
+    pseudotime: torch.Tensor
+    """Tensor of shape (n_cells,) with pseudotime of each cell in `adata`."""
+    time_points: torch.Tensor
+    """Tensor of shape (num_quantiles,) with the quantile means."""
 
     def __init__(
         self,
@@ -321,3 +326,59 @@ class VelocityDataset(Dataset):
 
     def n_genes(self):
         return len(self.gene_names)
+
+
+class BifurcatingMarkovChainDataset(MarkovChainDataset):
+    """
+    Dummy Markov chain dataset simulating an SDE with a defined
+    adjacency matrix instead of using a single-cell dataset.
+    """
+
+    def __init__(self, y0: torch.Tensor):
+        from bowside.training import integrate_model
+
+        self.sde = BifurcatingSDE()
+        n_steps = 50
+        self.time_points = torch.linspace(
+            0, n_steps - 1, n_steps, dtype=torch.float32, device=y0.device
+        )
+        simulations = integrate_model(
+            y0, self.sde, time_points=self.time_points, dt=0.1
+        )
+        self.X = simulations.reshape(-1, simulations.shape[-1])
+        self.markov_chains = torch.arange(self.X.shape[0]).reshape(
+            simulations.shape[1], simulations.shape[0]
+        )
+        self.gene_names = pd.Index([f"gene_{i}" for i in range(simulations.size(2))])
+        self.adata = ad.AnnData(
+            X=self.X.detach().cpu().numpy(), var=pd.DataFrame(index=self.gene_names)
+        )
+
+
+class BifurcatingPseudotimeDataset(PseudotimeDataset):
+    """
+    Dummy pseudotime dataset simulating an SDE with a defined adjacency
+    matrix instead of using a single-cell dataset.
+    """
+
+    def __init__(self, y0: torch.Tensor):
+        from bowside.training import integrate_model
+
+        self.sde = BifurcatingSDE()
+        n_steps = 50
+        self.time_points = torch.linspace(
+            0, n_steps - 1, n_steps, dtype=torch.float32, device=y0.device
+        )
+        simulations = integrate_model(
+            y0, self.sde, time_points=self.time_points, dt=0.1
+        )
+        self.X = simulations.reshape(-1, simulations.shape[-1])
+        self.pseudotime = self.time_points.repeat_interleave(simulations.shape[1])
+        self.sampled_cells = torch.arange(self.X.shape[0]).reshape(
+            simulations.shape[1], simulations.shape[0]
+        )
+
+        self.gene_names = pd.Index([f"gene_{i}" for i in range(simulations.size(2))])
+        self.adata = ad.AnnData(
+            X=self.X.detach().cpu().numpy(), var=pd.DataFrame(index=self.gene_names)
+        )
