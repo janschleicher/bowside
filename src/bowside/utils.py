@@ -1,3 +1,5 @@
+"""Module providing utility functions."""
+
 import logging
 
 import anndata as ad

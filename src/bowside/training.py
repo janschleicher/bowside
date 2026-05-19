@@ -273,7 +273,7 @@ def integrate_model(
         Whether to use the adjoint method. Default: False.
     solver_method : Optional[str], optional
         Numerical solver to use. With the default None, a suitable method
-        is chosen depending on the mode type.
+        is chosen depending on the model type.
     dt : float, optional
         The step size for the solver. Only used for SDEs. Default: 0.001.
     atol : float, optional
@@ -396,7 +396,7 @@ def train_step_integration(
         Whether to use the adjoint method. Default: False.
     solver_method : Optional[str], optional
         Numerical solver to use. With the default None, a suitable method
-        is chosen depending on the mode type.
+        is chosen depending on the model type.
     dt : float, optional
         The step size for the solver. Only used for SDEs. Default: 0.001.
     atol : float, optional
@@ -482,7 +482,7 @@ def test(
         the time points. Default: None.
     solver_method : Optional[str], optional
         Numerical solver to use. With the default None, a suitable method
-        is chosen depending on the mode type.
+        is chosen depending on the model type.
     dt : float, optional
         The step size for the solver. Only used for SDEs. Default: 0.001.
     atol : float, optional
@@ -613,7 +613,7 @@ def train_integration(
         Whether to use the adjoint method. Default: False.
     solver_method : Optional[str], optional
         Numerical solver to use. With the default None, a suitable method
-        is chosen depending on the mode type.
+        is chosen depending on the model type.
     dt : float, optional
         The step size for the solver. Only used for SDEs. Default: 0.001.
     atol : float, optional
