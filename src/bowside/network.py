@@ -44,9 +44,9 @@ def _get_network(
     -------
     nx.DiGraph
         Directed graph representing the gene regulatory network, with
-        edge attributes "weight" (regulation strength) and "dist"
-        (distance, inverse of regulation strength, for algorithms that
-        compute shortest paths).
+        edge attributes "weight" (absolute regulation strength, without
+        direction) and "dist" (distance, inverse of absolute regulation
+        strength, for algorithms that compute shortest paths).
 
     Raises
     ------
@@ -86,6 +86,8 @@ def _get_network(
     for edge in network.edges(data=True):
         if "weight" not in edge[2]:
             raise ValueError("Invalid network. All edges must have a weight.")
+        # Use absolute weight
+        edge[2]["weight"] = abs(edge[2]["weight"])
         if "dist" not in edge[2]:
             add_dists = True
     if add_dists:
@@ -207,8 +209,8 @@ def closeness_centrality(
 ) -> pd.Series:
     """
     Compute the closeness centrality for all genes in the trained gene
-    regulatory network model, using the inverse of the regulatory
-    weight as the distance for shortest path calculations.
+    regulatory network model, using the inverse of the absolute
+    regulatory weight as the distance for shortest path calculations.
 
     Parameters
     ----------
@@ -243,8 +245,8 @@ def betweenness_centrality(
 ) -> pd.Series:
     """
     Compute the betweenness centrality for all genes in the trained gene
-    regulatory network model, using the inverse of the regulatory
-    weight as the distance for shortest path calculations.
+    regulatory network model, using the inverse of the absolute
+    regulatory weight as the distance for shortest path calculations.
 
     Parameters
     ----------
@@ -280,8 +282,8 @@ def edge_betweenness_centrality(
 ) -> pd.DataFrame:
     """
     Compute the betweenness centrality for all edges in the trained gene
-    regulatory network model, using the inverse of the regulatory
-    weight as the distance for shortest path calculations.
+    regulatory network model, using the inverse of the absolute
+    regulatory weight as the distance for shortest path calculations.
 
     Parameters
     ----------
@@ -321,8 +323,8 @@ def eigenvector_centrality(
 ) -> pd.Series:
     """
     Compute the closeness centrality for all genes in the trained gene
-    regulatory network model, using the regulatory weight as the
-    connection strength.
+    regulatory network model, using the absolute regulatory weight as
+    the connection strength.
 
     Parameters
     ----------
