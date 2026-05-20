@@ -2,11 +2,12 @@
 
 import logging
 from collections.abc import Sequence
-from typing import Optional
+from typing import Dict, Literal, Optional, Union, get_args
 
 import networkx as nx
 import pandas as pd
 
+from bowside.dataset import MarkovChainDataset, PseudotimeDataset
 from bowside.model import GRNModel
 
 log = logging.getLogger(__name__)
@@ -348,3 +349,95 @@ def eigenvector_centrality(
         nx.eigenvector_centrality(network, weight="weight"),
         name="eigenvector_centrality",
     )
+
+
+CentralityMeasure = Literal[
+    "degree",
+    "outdegree",
+    "indegree",
+    "closeness",
+    "betweenness",
+    "edge_betweenness",
+    "eigenvector",
+]
+
+
+def compute_centrality(
+    model: GRNModel,
+    dataset: Optional[Union[MarkovChainDataset, PseudotimeDataset]] = None,
+    measures: Union[
+        Literal["all"], CentralityMeasure, Sequence[CentralityMeasure]
+    ] = "all",
+) -> Dict[str, Union[pd.Series, pd.DataFrame]]:
+    """
+    Compute different centrality measures for a trained gene regulatory
+    network model.
+
+    Parameters
+    ----------
+    model : GRNModel
+        The trained gene regulatory network model.
+    dataset : Optional[Union[MarkovChainDataset, PseudotimeDataset]], optional
+        Dataset to use for gene names. If this is given, the results
+        will be stored in `dataset.adata.uns`. Default: None.
+    measures : Union[Literal["all"], CentralityMeasure, Sequence[CentralityMeasure]], optional
+        Centrality measures to compute. Must either be "all", one of
+        ["degree", "outdegree", "indegree", "closeness", "betweenness", "edge_betweenness", "eigenvector"],
+        or a sequence with an arbitary combination of these measures.
+        Default: "all".
+
+    Returns
+    -------
+    Dict[str, Union[pd.Series, pd.DataFrame]]
+        Dictionary with series for all requested node centrality
+        measures and data frames for requested edge centrality measures.
+
+    Raises
+    ------
+    ValueError
+        An error is raised if `measure` has an invalid value.
+    TypeError
+        An error is raised if `dataset` is of the wrong type.
+    """
+    # Check centrality measures
+    valid_measures = list(get_args(CentralityMeasure))
+    if isinstance(measures, Sequence):
+        for measure in measures:
+            if measure not in valid_measures:
+                raise ValueError(
+                    f"{measure} is not a valid centrality measure. "
+                    f"Must be one of {valid_measures}."
+                )
+    elif measures != "all" and measures not in valid_measures:
+        raise ValueError(
+            f"{measures} is not a valid centrality measure. "
+            f"Must be one of {valid_measures} or 'all'."
+        )
+    elif measures == "all":
+        measures = valid_measures
+    else:
+        measures = [measure]
+
+    # Get network from model, using gene names from the dataset
+    node_names = None
+    if dataset is not None:
+        if not isinstance(dataset, (MarkovChainDataset, PseudotimeDataset)):
+            raise TypeError(
+                f"Invalid dataset type: {type(dataset)}. Must be one of "
+                f"[MarkovChainDataset, PseudotimeDataset]."
+            )
+        node_names = dataset.gene_names.tolist()
+    network = _get_network(model, node_names=node_names)
+
+    # Compute centrality measures
+    results_dict = {}
+    for measure in measures:
+        key = f"{measure}_centrality"
+        results_dict[key] = globals()[key](network=network)
+
+    if dataset is not None:
+        if "bowside" not in dataset.adata.uns:
+            dataset.adata.uns["bowside"] = {}
+        dataset.adata.uns["bowside"]["network"] = results_dict
+
+    return results_dict
