@@ -71,7 +71,10 @@ def _get_network(
                 raise ValueError("Different number of genes for `model` and `network`.")
             log.info("Parameters `model` and `network` are both set. Using `network`.")
         else:
-            idx = pd.Index(pd.Series(node_names))
+            if node_names is not None:
+                idx = pd.Index(pd.Series(node_names))
+            else:
+                idx = None
             network = nx.from_pandas_adjacency(
                 pd.DataFrame(
                     model.adj.detach().cpu().numpy(),
@@ -136,7 +139,7 @@ def degree_centrality(
     return pd.Series(nx.degree_centrality(network), name="degree_centrality")
 
 
-def out_degree_centrality(
+def outdegree_centrality(
     model: Optional[GRNModel] = None,
     network: Optional[nx.DiGraph] = None,
     node_names: Optional[Sequence] = None,
@@ -169,7 +172,7 @@ def out_degree_centrality(
     return pd.Series(nx.out_degree_centrality(network), name="out_degree_centrality")
 
 
-def in_degree_centrality(
+def indegree_centrality(
     model: Optional[GRNModel] = None,
     network: Optional[nx.DiGraph] = None,
     node_names: Optional[Sequence] = None,
@@ -403,7 +406,7 @@ def compute_centrality(
     """
     # Check centrality measures
     valid_measures = list(get_args(CentralityMeasure))
-    if isinstance(measures, Sequence):
+    if isinstance(measures, Sequence) and not isinstance(measures, str):
         for measure in measures:
             if measure not in valid_measures:
                 raise ValueError(
@@ -418,7 +421,7 @@ def compute_centrality(
     elif measures == "all":
         measures = valid_measures
     else:
-        measures = [measure]
+        measures = [measures]
 
     # Get network from model, using gene names from the dataset
     node_names = None
