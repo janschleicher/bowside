@@ -1,7 +1,7 @@
 """Module for datasets to be used to train an ODE GRN model."""
 
 from collections.abc import Sequence
-from typing import Optional, Union
+from typing import Optional, Tuple, Union
 
 import anndata as ad
 import numpy as np
@@ -128,13 +128,13 @@ class MarkovChainDataset(Dataset):
             self.adata.uns["markov_sampling"]["cell_sequences"]
         )
 
-    def __len__(self):
+    def __len__(self) -> int:
         return self.markov_chains.shape[0]
 
-    def __getitem__(self, idx):
+    def __getitem__(self, idx) -> torch.Tensor:
         return self.X[self.markov_chains[idx, :], :]
 
-    def n_genes(self):
+    def n_genes(self) -> int:
         return len(self.gene_names)
 
 
@@ -245,13 +245,13 @@ class PseudotimeDataset(Dataset):
                 torch.randint(len(tp_idx), (num_cells,), generator=generator)
             ]
 
-    def __len__(self):
+    def __len__(self) -> int:
         return self.sampled_cells.shape[0]
 
-    def __getitem__(self, idx):
+    def __getitem__(self, idx) -> torch.Tensor:
         return self.X[self.sampled_cells[idx, :], :]
 
-    def n_genes(self):
+    def n_genes(self) -> int:
         return len(self.gene_names)
 
 
@@ -318,13 +318,13 @@ class VelocityDataset(Dataset):
         self.X = torch.from_numpy(X).to(torch.float32)
         self.V = torch.from_numpy(V).to(torch.float32)
 
-    def __len__(self):
+    def __len__(self) -> int:
         return self.X.shape[0]
 
-    def __getitem__(self, idx):
+    def __getitem__(self, idx) -> Tuple[torch.Tensor, torch.Tensor]:
         return self.X[idx, :], self.V[idx, :]
 
-    def n_genes(self):
+    def n_genes(self) -> int:
         return len(self.gene_names)
 
 
