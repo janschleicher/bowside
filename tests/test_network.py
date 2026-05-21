@@ -54,7 +54,7 @@ def test_get_network(
 
     # Check that all nodes are present
     if model is not None:
-        assert graph.number_of_nodes() == model.adj.size(0), (
+        assert graph.number_of_nodes() == model.n_genes(), (
             "Mismatch between number of nodes in the graph and number of genes."
         )
     if node_names is not None and network is None:

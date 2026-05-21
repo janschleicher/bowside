@@ -90,8 +90,6 @@ class GRNModel(torch.nn.Module):
                 self.activation = torch.nn.ReLU()
 
     def forward(self, t, x):
-        # TODO: Add scaling factor inside sigmoid function so it does not saturate so easily
-        # or initialize adj with smaller weights to facilitate training
         return (
             self.log_scale.exp()
             * self.activation(
@@ -126,6 +124,9 @@ class GRNModel(torch.nn.Module):
                 )
             )
             self.adj.copy_(self.adj * self.adj_mask)
+
+    def n_genes(self) -> int:
+        return self.adj.size(0)
 
 
 class GRNModelSDE(GRNModel):

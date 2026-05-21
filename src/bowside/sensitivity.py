@@ -78,7 +78,8 @@ def simulate_knockout(
         An error is raised if `gene` is of type str and is not a valid
         gene name in `dataset`.
     IndexError
-        An error is raised if `gene` is of type int and is out of bounds.
+        An error is raised if `gene` is of type i
+        nt and is out of bounds.
     """
     time_points = None
     n_steps = None
@@ -93,9 +94,9 @@ def simulate_knockout(
     y0 = y[:, 0, :]
 
     # Check parameters
-    if dataset.n_genes() != model.adj.size(0):
+    if dataset.n_genes() != model.n_genes():
         raise ValueError(
-            f"Incompatible number of genes. Dataset: {dataset.n_genes()}, model: {model.adj.size(0)}"
+            f"Incompatible number of genes. Dataset: {dataset.n_genes()}, model: {model.n_genes()}"
         )
 
     if isinstance(dataset, PseudotimeDataset):

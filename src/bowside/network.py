@@ -67,7 +67,7 @@ def _get_network(
         raise TypeError("Parameter `model` must be of type GRNModel.")
     else:
         if network is not None and isinstance(network, nx.DiGraph):
-            if network.number_of_nodes() != model.adj.size(0):
+            if network.number_of_nodes() != model.n_genes():
                 raise ValueError("Different number of genes for `model` and `network`.")
             log.info("Parameters `model` and `network` are both set. Using `network`.")
         else:
