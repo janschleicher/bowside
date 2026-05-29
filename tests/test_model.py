@@ -110,3 +110,23 @@ class TestGRNModels:
             adj_sparsity=adj_sparsity,
             activation=activation,
         )
+
+
+def test_forward():
+    """
+    Sanity check: New model formulation should produce same result as
+    the old one (with double matrix transpose).
+    """
+    model = GRNModel(n_genes=5, adj=TEST_ADJ_MAT)
+    rng = torch.manual_seed(42)
+    x = torch.rand((20, model.n_genes()), generator=rng)
+    dx = model.forward(None, x)
+
+    dx_manual = (
+        model.log_scale.exp()
+        * model.activation(
+            ((model.adj * model.adj_mask).T @ x.T).T + model.log_bias.exp()
+        )
+        - model.log_decay_rate.exp() * x
+    )
+    assert torch.all(dx == dx_manual)

@@ -92,9 +92,7 @@ class GRNModel(torch.nn.Module):
     def forward(self, t, x):
         return (
             self.log_scale.exp()
-            * self.activation(
-                ((self.adj * self.adj_mask).T @ x.T).T + self.log_bias.exp()
-            )
+            * self.activation(x @ (self.adj * self.adj_mask) + self.log_bias.exp())
             - self.log_decay_rate.exp() * x
         )
 
