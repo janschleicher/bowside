@@ -5,8 +5,8 @@ from typing import Callable, Literal, Optional
 import diffrax
 import equinox as eqx
 import jax
-import jax.numpy as jnp
 import lineax as lx
+from jax import numpy as jnp
 
 
 class GRNModel(eqx.Module):
