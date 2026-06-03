@@ -43,9 +43,12 @@ dependencies = [
     "scanpy>=1.10",
     "scvelo",
     "torch",
-    "torchdiffeq",
-    "torchsde",
-    "geomloss",
+    "jax",
+    "lineax",
+    "diffrax",
+    "ott-jax",
+    "equinox",
+    "optax",
 ]
 
 [project.urls]
