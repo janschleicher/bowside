@@ -4,9 +4,11 @@ from collections.abc import Sequence
 from typing import Optional, Tuple, Union
 
 import anndata as ad
+import jax
 import numpy as np
 import pandas as pd
 import torch
+from jax import numpy as jnp
 from numpy.typing import NDArray
 from scipy import sparse
 from torch.utils.data import Dataset
@@ -334,17 +336,21 @@ class BifurcatingMarkovChainDataset(MarkovChainDataset):
     adjacency matrix instead of using a single-cell dataset.
     """
 
-    def __init__(self, y0: torch.Tensor):
-        from bowside.training import integrate_model
-
+    def __init__(self, y0: jax.Array):
         self.sde = BifurcatingSDE()
         n_steps = 50
-        self.time_points = torch.linspace(
-            0, n_steps - 1, n_steps, dtype=torch.float32, device=y0.device
+        self.time_points = torch.linspace(0, n_steps - 1, n_steps, dtype=torch.float32)
+
+        # Numerical integration
+        keys = jax.random.split(jax.random.key(42), y0.shape[0])
+        ts = jnp.asarray(self.time_points.detach().cpu().numpy())
+        simulations = jax.vmap(self.sde, in_axes=[None, 0, 0])(ts, y0, keys)
+        assert isinstance(simulations, jax.Array)
+        simulations = torch.from_numpy(
+            np.swapaxes(np.asarray(simulations).copy(), 0, 1)
         )
-        simulations = integrate_model(
-            y0, self.sde, time_points=self.time_points, dt=0.1
-        )
+
+        # Store attributes
         self.X = simulations.reshape(-1, simulations.shape[-1])
         self.markov_chains = torch.arange(self.X.shape[0]).reshape(
             simulations.shape[1], simulations.shape[0]
@@ -361,17 +367,21 @@ class BifurcatingPseudotimeDataset(PseudotimeDataset):
     matrix instead of using a single-cell dataset.
     """
 
-    def __init__(self, y0: torch.Tensor):
-        from bowside.training import integrate_model
-
+    def __init__(self, y0: jax.Array):
         self.sde = BifurcatingSDE()
         n_steps = 50
-        self.time_points = torch.linspace(
-            0, n_steps - 1, n_steps, dtype=torch.float32, device=y0.device
+        self.time_points = torch.linspace(0, n_steps - 1, n_steps, dtype=torch.float32)
+
+        # Numerical integration
+        keys = jax.random.split(jax.random.key(42), y0.shape[0])
+        ts = jnp.asarray(self.time_points.detach().cpu().numpy())
+        simulations = jax.vmap(self.sde, in_axes=[None, 0, 0])(ts, y0, keys)
+        assert isinstance(simulations, jax.Array)
+        simulations = torch.from_numpy(
+            np.swapaxes(np.asarray(simulations).copy(), 0, 1)
         )
-        simulations = integrate_model(
-            y0, self.sde, time_points=self.time_points, dt=0.1
-        )
+
+        # Store attributes
         self.X = simulations.reshape(-1, simulations.shape[-1])
         self.pseudotime = self.time_points.repeat_interleave(simulations.shape[1])
         self.sampled_cells = torch.arange(self.X.shape[0]).reshape(
