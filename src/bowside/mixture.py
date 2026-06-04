@@ -144,7 +144,7 @@ class GaussianMixtureTimeseries:
     Parameters
     ----------
     sequences : np.typing.ArrayLike
-        Array of shape (n_steps, n_sequences, n_var) containing gene
+        Array of shape (n_sequences, n_steps, n_var) containing gene
         expression sequences.
     time_points : np.typing.ArrayLike
         Array of shape (n_steps,) containing the time points.
@@ -181,9 +181,9 @@ class GaussianMixtureTimeseries:
             raise ValueError("Parameter `time_points` must be 1-dimensional.")
         if cluster_labels.ndim != 1:
             raise ValueError("Parameter `cluster_labels` must be 1-dimensional.")
-        if time_points.shape[0] != sequences.shape[0]:
+        if time_points.shape[0] != sequences.shape[1]:
             raise ValueError("Shape mismatch between `time_points` and `sequences`.")
-        if sequences.shape[1] != cluster_labels.shape[0]:
+        if sequences.shape[0] != cluster_labels.shape[0]:
             raise ValueError("Shape mismatch between `sequences` and `cluster_labels`.")
 
         time_points.sort()
@@ -210,11 +210,11 @@ class GaussianMixtureTimeseries:
             )
         )
         for i, cluster in enumerate(clusters):
-            cluster_sequences = sequences[:, cluster_labels == cluster, :]
-            self.means[i] = cluster_sequences.mean(axis=1)
+            cluster_sequences = sequences[cluster_labels == cluster, :, :]
+            self.means[i] = cluster_sequences.mean(axis=0)
             for t in range(time_points.shape[0]):
                 self.covariances[i, t, :, :] = np.cov(
-                    cluster_sequences[t, :, :], bias=False, rowvar=False
+                    cluster_sequences[:, t, :], bias=False, rowvar=False
                 )
 
         # Generate Gaussian mixtures

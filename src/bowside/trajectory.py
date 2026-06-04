@@ -72,7 +72,7 @@ def infer_trajectories(
     Returns `None`. Sets the following fields in `dataset.adata.uns`:
 
     `adata.uns["bowside"]["simulations"]` : :class:`numpy.ndarray`
-        Array of shape (n_steps, n_simulations, n_var) containing gene
+        Array of shape (n_simulations, n_steps, n_var) containing gene
         expression simulations from the trained model.
     `adata.uns["bowside"]["num_trajectories"]` : int
         Number of inferred trajectories. If `min_clusters < max_clusters`,
@@ -157,17 +157,12 @@ def infer_trajectories(
     elif n_steps is not None:
         ts = jnp.linspace(0, n_steps - 1, n_steps)
 
-    # Sequences have to be of shape (n_steps, n_cells, n_genes)
-    # Model output is (n_cells, n_steps, n_genes)
+    # Sequences are of shape (n_cells, n_steps, n_genes)
     if isinstance(model, GRNModelSDE):
         keys = jax.random.split(jax.random.key(42), y0.shape[0])
-        sequences = np.swapaxes(
-            np.asarray(jax.vmap(model, in_axes=[None, 0, 0])(ts, y0, keys)), 0, 1
-        )
+        sequences = np.asarray(jax.vmap(model, in_axes=[None, 0, 0])(ts, y0, keys))
     else:
-        sequences = np.swapaxes(
-            np.asarray(jax.vmap(model, in_axes=[None, 0])(ts, y0)), 0, 1
-        )
+        sequences = np.asarray(jax.vmap(model, in_axes=[None, 0])(ts, y0))
 
     adata = dataset.adata
     if "bowside" not in adata.uns:
@@ -177,7 +172,7 @@ def infer_trajectories(
     # Hierarchical clustering
     if not skip_clustering:
         distances = pdist(
-            np.moveaxis(sequences, 1, 0).reshape(sequences.shape[1], -1),
+            sequences.reshape(sequences.shape[0], -1),
             metric=metric,
         )
         distances_square = squareform(distances)
@@ -201,17 +196,17 @@ def infer_trajectories(
         adata.uns["bowside"]["trajectory_inference_clusters"] = labels
     else:
         num_trajectories = 1
-        labels = np.ones(sequences.shape[1], dtype=int)
+        labels = np.ones(sequences.shape[0], dtype=int)
         adata.uns["bowside"]["num_trajectories"] = num_trajectories
 
     # Computing average expression trajectories
-    trajectories = np.zeros((num_trajectories, sequences.shape[0], sequences.shape[2]))
+    trajectories = np.zeros((num_trajectories, sequences.shape[1], sequences.shape[2]))
     for i, cluster in enumerate(np.unique(labels, sorted=True)):
-        cluster_sequences = sequences[:, labels == cluster, :]
+        cluster_sequences = sequences[labels == cluster, :, :]
         if trajectory_mode == "mean":
-            trajectories[i] = cluster_sequences.mean(axis=1)
+            trajectories[i] = cluster_sequences.mean(axis=0)
         elif trajectory_mode == "median":
-            trajectories[i] = np.median(cluster_sequences, axis=1)
+            trajectories[i] = np.median(cluster_sequences, axis=0)
     adata.uns["bowside"]["trajectories"] = trajectories
 
 

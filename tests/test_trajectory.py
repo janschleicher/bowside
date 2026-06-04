@@ -70,7 +70,7 @@ def test_trajectory_inference(
         gene_i_up_trajectory = trajectory_inference_results["trajectories"][
             :, -1, i
         ].argmax()
-        final_expression = simulations[-1, :, i]
+        final_expression = simulations[:, -1, i]
         cluster_indices = (
             trajectory_inference_results["trajectory_inference_clusters"]
             == gene_i_up_trajectory + 1
@@ -88,12 +88,12 @@ def test_trajectory_inference(
             trajectory
             == agg_func(
                 simulations[
-                    :,
                     trajectory_inference_results["trajectory_inference_clusters"]
                     == j + 1,
                     :,
+                    :,
                 ],
-                axis=1,
+                axis=0,
             )
         ), (
             f"Trajectory coordinates for trajectory {j} are not the "
