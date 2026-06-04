@@ -1,10 +1,11 @@
 """Module for trajectory inference from a trained dynamic GRN model."""
 
 import logging
-from typing import Literal, Optional, Union
+from typing import Literal, Union
 
+import jax
 import numpy as np
-import torch
+from jax import numpy as jnp
 from scipy.cluster.hierarchy import fcluster, linkage
 from scipy.spatial.distance import pdist, squareform
 from scipy.stats import entropy
@@ -12,8 +13,7 @@ from sklearn.metrics import silhouette_score
 
 from bowside.dataset import MarkovChainDataset, PseudotimeDataset
 from bowside.mixture import GaussianMixtureTimeseries
-from bowside.model import GRNModel
-from bowside.training import integrate_model
+from bowside.model import GRNModel, GRNModelSDE
 
 log = logging.getLogger(__name__)
 
@@ -30,10 +30,6 @@ def infer_trajectories(
         "single", "complete", "average", "weighted", "centroid", "median", "ward"
     ] = "ward",
     trajectory_mode: Literal["mean", "median"] = "mean",
-    solver_method: Optional[str] = None,
-    dt: float = 0.001,
-    atol: float = 1e-4,
-    rtol: float = 1e-5,
 ):
     """
     Infer average gene expression trajectories from differential equation
@@ -116,7 +112,7 @@ def infer_trajectories(
 
     # Data setup
     y = dataset[:]
-    y0 = y[:, 0, :]
+    y0 = jnp.asarray(y[:, 0, :].detach().numpy())
 
     if isinstance(dataset, PseudotimeDataset):
         time_points = dataset.time_points
@@ -156,23 +152,21 @@ def infer_trajectories(
         )
 
     # Simulate sequences with differential equation model
-    model.eval()
-    with torch.no_grad():
-        sequences = (
-            integrate_model(
-                y0,
-                model,
-                n_steps=n_steps,
-                time_points=time_points,
-                adjoint=False,
-                solver_method=solver_method,
-                dt=dt,
-                atol=atol,
-                rtol=rtol,
-            )
-            .detach()
-            .cpu()
-            .numpy()
+    if time_points is not None:
+        ts = jnp.asarray(time_points.detach().cpu().numpy())
+    elif n_steps is not None:
+        ts = jnp.linspace(0, n_steps - 1, n_steps)
+
+    # Sequences have to be of shape (n_steps, n_cells, n_genes)
+    # Model output is (n_cells, n_steps, n_genes)
+    if isinstance(model, GRNModelSDE):
+        keys = jax.random.split(jax.random.key(42), y0.shape[0])
+        sequences = np.swapaxes(
+            np.asarray(jax.vmap(model, in_axes=[None, 0, 0])(ts, y0, keys)), 0, 1
+        )
+    else:
+        sequences = np.swapaxes(
+            np.asarray(jax.vmap(model, in_axes=[None, 0])(ts, y0)), 0, 1
         )
 
     adata = dataset.adata

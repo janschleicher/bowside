@@ -1,15 +1,16 @@
 from typing import Literal
 
+import jax
 import numpy as np
 import pytest
-import torch
+from jax import numpy as jnp
 
 from bowside.dataset import BifurcatingMarkovChainDataset, BifurcatingPseudotimeDataset
 from bowside.model import GRNModelSDE
 from bowside.trajectory import infer_cell_fates, infer_trajectories
 
-Y0_BALANCED = torch.tensor([[0.0, 0.0]]).repeat(500, 1)
-Y0_IMBALANCED = torch.tensor([[0.0, 0.3]]).repeat(500, 1)
+Y0_BALANCED = jnp.repeat(jnp.asarray([[0.0, 0.0]]), 500, 0)
+Y0_IMBALANCED = jnp.repeat(jnp.asarray([[0.0, 0.3]]), 500, 0)
 
 
 @pytest.mark.parametrize("y0", [Y0_BALANCED, Y0_IMBALANCED])
@@ -19,7 +20,7 @@ Y0_IMBALANCED = torch.tensor([[0.0, 0.3]]).repeat(500, 1)
     [("euclidean", "ward"), ("euclidean", "complete"), ("cosine", "average")],
 )
 def test_trajectory_inference(
-    y0: torch.Tensor,
+    y0: jax.Array,
     trajectory_mode: Literal["mean", "median"],
     metric: Literal["cityblock", "correlation", "cosine", "euclidean", "sqeuclidean"],
     linkage_method: Literal[
@@ -34,7 +35,6 @@ def test_trajectory_inference(
         metric=metric,
         linkage_method=linkage_method,
         trajectory_mode=trajectory_mode,
-        dt=0.1,
     )
     adata = dataset.adata
     assert "bowside" in adata.uns, "Field 'bowside' missing from `adata.uns`."
@@ -101,6 +101,7 @@ def test_trajectory_inference(
         )
 
 
+# FIXME: fails with EquinoxRuntimeError -> maximum number of solver steps was reached
 @pytest.mark.parametrize("min_clusters, max_clusters", [(1, 1), (2, 3), (1, 6), (2, 2)])
 def test_trajectory_inference_cluster_ranges(min_clusters: int, max_clusters: int):
     dataset = BifurcatingMarkovChainDataset(Y0_BALANCED)
@@ -110,7 +111,6 @@ def test_trajectory_inference_cluster_ranges(min_clusters: int, max_clusters: in
         model,
         min_clusters=min_clusters,
         max_clusters=max_clusters,
-        dt=0.1,
     )
     adata = dataset.adata
     assert "bowside" in adata.uns, "Field 'bowside' missing from `adata.uns`."
@@ -168,47 +168,47 @@ def test_trajectory_inference_cluster_ranges(min_clusters: int, max_clusters: in
     ), "Mismatch between number of trajectories and trajectory coordinates array shape."
 
 
+# FIXME: fails with EquinoxRuntimeError -> maximum number of solver steps was reached
 def test_trajectory_inference_markov_chain_dataset():
     dataset = BifurcatingMarkovChainDataset(Y0_BALANCED)
-    model = GRNModelSDE(n_genes=dataset.n_genes())
-    infer_trajectories(dataset, model, min_clusters=2, max_clusters=3, dt=0.01)
+    model = GRNModelSDE(n_genes=dataset.n_genes(), key=jax.random.key(42), dt=0.1)
+    infer_trajectories(dataset, model, min_clusters=2, max_clusters=3)
 
 
 def test_trajectory_inference_exceptions():
     dataset = BifurcatingPseudotimeDataset(Y0_BALANCED)
     model = dataset.sde
     with pytest.raises(TypeError, match="Invalid dataset type"):
-        infer_trajectories(dataset.adata, model, dt=0.1)  # type: ignore
+        infer_trajectories(dataset.adata, model)  # type: ignore
     with pytest.raises(
         TypeError,
         match="Parameters `min_clusters` and `max_clusters must be of type int",
     ):
-        infer_trajectories(dataset, model, min_clusters=1.2, dt=0.1)  # type: ignore
+        infer_trajectories(dataset, model, min_clusters=1.2)  # type: ignore
     with pytest.raises(
         TypeError,
         match="Parameters `min_clusters` and `max_clusters must be of type int",
     ):
-        infer_trajectories(dataset, model, max_clusters="2", dt=0.1)  # type: ignore
+        infer_trajectories(dataset, model, max_clusters="2")  # type: ignore
     with pytest.raises(ValueError, match="Invalid range for number of clusters"):
-        infer_trajectories(dataset, model, min_clusters=4, max_clusters=3, dt=0.1)
+        infer_trajectories(dataset, model, min_clusters=4, max_clusters=3)
     with pytest.raises(ValueError, match="Parameter `min_clusters` must be positive."):
-        infer_trajectories(dataset, model, min_clusters=-2, dt=0.1)
+        infer_trajectories(dataset, model, min_clusters=-2)
     with pytest.raises(
         NotImplementedError, match="Trajectory mode .+ is not implemented."
     ):
-        infer_trajectories(dataset, model, trajectory_mode="max", dt=0.1)  # type: ignore
+        infer_trajectories(dataset, model, trajectory_mode="max")  # type: ignore
 
 
+# FIXME: fails with LinAlgError -> input matrix is not symmetric positive definite
 @pytest.mark.parametrize(
     "n_clusters, score_threshold",
     [(2, 0.0), (1, 0.0), (3, 0.0), (2, 0.95)],
 )
 def test_fate_inference(n_clusters: int, score_threshold: float):
     dataset = BifurcatingPseudotimeDataset(Y0_BALANCED)
-    model = GRNModelSDE(n_genes=dataset.n_genes())
-    infer_trajectories(
-        dataset, model, min_clusters=n_clusters, max_clusters=n_clusters, dt=0.01
-    )
+    model = dataset.sde
+    infer_trajectories(dataset, model, min_clusters=n_clusters, max_clusters=n_clusters)
     infer_cell_fates(dataset, score_threshold=score_threshold)
 
     # Check presence/absence of results, depending on number of trajectories
