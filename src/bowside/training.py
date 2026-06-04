@@ -3,21 +3,23 @@
 import inspect
 import logging
 import operator
-from collections.abc import Callable
 from functools import partial
 from math import floor, log10
 from pathlib import Path
 from typing import Any, List, Literal, Optional, Protocol, Tuple, Union
 
+import jax
 import torch
-from geomloss import SamplesLoss
+from jax import numpy as jnp
+from ott.geometry import costs, epsilon_scheduler, pointcloud
+from ott.tools import sinkhorn_divergence
 from torchdiffeq import odeint, odeint_adjoint
 from torchsde import sdeint, sdeint_adjoint
 from tqdm.auto import tqdm
 from tqdm.contrib.logging import logging_redirect_tqdm
 
 from bowside.dataset import MarkovChainDataset, PseudotimeDataset
-from bowside.model import GRNModel, GRNModelSDE
+from bowside.model_torch import GRNModel, GRNModelSDE
 
 
 class EarlyStopping:
@@ -68,7 +70,7 @@ class EarlyStopping:
         self.patience = patience
         self.delta = delta
         self.mode = mode
-        self.best_value = torch.tensor(torch.inf)
+        self.best_value = jnp.inf
         if self.mode == "max":
             self.best_value = -self.best_value
             self.compare = operator.gt
@@ -87,7 +89,7 @@ class EarlyStopping:
 
         Parameters
         ----------
-        value : torch.Tensor
+        value : float
             Current value of the quantity tracked for early stopping.
 
         Returns
@@ -121,122 +123,206 @@ class NaNTensorError(RuntimeError):
     pass
 
 
+@jax.jit
+def mse_loss(
+    y_pred: jax.Array, y_true: jax.Array, weight: Optional[jax.Array] = None
+) -> jax.Array:
+    """
+    Compute the mean squared error between two arrays.
+
+    Parameters
+    ----------
+    y_pred : jax.Array
+        Predicted values.
+    y_true : jax.Array
+        True values.
+    weight : Optional[jax.Array], optional
+        Weights for each sample. Default: None.
+
+    Returns
+    -------
+    jax.Array
+        Mean squared error between arrays.
+    """
+    if y_pred.shape != y_true.shape:
+        raise ValueError(
+            f"Incompatible shapes of `y_pred`: {y_pred.shape} and `y_true`: {y_true.shape}."
+        )
+    if weight is not None:
+        if weight.shape != y_pred.shape:
+            raise ValueError(
+                f"Incompatible shapes of `weight`: {weight.shape} and `y_pred`: {y_pred.shape}."
+            )
+        return jnp.sum(jnp.pow(y_pred - y_true, 2) * weight) / jnp.sum(weight)
+    return jnp.mean(jnp.pow(y_pred - y_true, 2))
+
+
+@jax.jit
+def mae_loss(
+    y_pred: jax.Array, y_true: jax.Array, weight: Optional[jax.Array] = None
+) -> jax.Array:
+    """
+    Compute the mean absolute error between two arrays.
+
+    Parameters
+    ----------
+    y_pred : jax.Array
+        Predicted values.
+    y_true : jax.Array
+        True values.
+    weight : Optional[jax.Array], optional
+        Weights for each sample. Default: None.
+
+    Returns
+    -------
+    jax.Array
+        Mean absolute error between arrays.
+    """
+    if y_pred.shape != y_true.shape:
+        raise ValueError(
+            f"Incompatible shapes of `y_pred`: {y_pred.shape} and `y_true`: {y_true.shape}."
+        )
+    if weight is not None:
+        if weight.shape != y_pred.shape:
+            raise ValueError(
+                f"Incompatible shapes of `weight`: {weight.shape} and `y_pred`: {y_pred.shape}."
+            )
+        return jnp.sum(jnp.abs(y_pred - y_true) * weight) / jnp.sum(weight)
+    return jnp.mean(jnp.abs(y_pred - y_true))
+
+
+class LossFunction(Protocol):
+    def __call__(
+        self, y_pred: jax.Array, y_true: jax.Array, *args: Any, **kwargs: Any
+    ) -> jax.Array: ...
+
+
 def qqloss(
-    y_pred: torch.Tensor,
-    y_true: torch.Tensor,
+    y_pred: jax.Array,
+    y_true: jax.Array,
     dim: int = 0,
     n_quantiles: int = 100,
-    metric: Callable[
-        [torch.Tensor, torch.Tensor], torch.Tensor
-    ] = torch.nn.functional.mse_loss,
-    weight: Optional[torch.Tensor] = None,
-) -> torch.Tensor:
+    metric: LossFunction = mse_loss,
+    weight: Optional[jax.Array] = None,
+) -> jax.Array:
     """
-    Compute the difference between the quantiles of two tensors along a
+    Compute the difference between the quantiles of two arrays along a
     given dimension.
 
     Parameters
     ----------
-    y_pred : torch.Tensor
+    y_pred : jax.Array
         Predicted values.
-    y_true : torch.Tensor
+    y_true : jax.Array
         True values.
     dim : int, optional
         The dimension to reduce. Default: 0.
     n_quantiles : int, optional
         Number of quantiles. Default: 100.
-    metric : Callable, optional
+    metric : LossFunction, optional
         Metric for comparing the quantiles. Default:
-        `torch.nn.functional.mse_loss`.
-    weight : Optional[torch.Tensor], optional
+        `bowside.training.functional.mse_loss`.
+    weight : Optional[jax.Array], optional
         Weights for each sample. Only used when `metric` supports this.
         Default: None.
 
     Returns
     -------
-    torch.Tensor
+    jax.Array
         Difference between quantiles.
     """
-    quantiles = torch.linspace(0, 1, n_quantiles + 1, device=y_true.device)
+    quantiles = jnp.linspace(0, 1, n_quantiles + 1)
     signature = inspect.signature(metric)
     has_weight = any(param.name == "weight" for param in signature.parameters.values())
-    pred = torch.quantile(y_pred, quantiles, dim=dim)
+    pred = jnp.quantile(y_pred, quantiles, axis=dim)
     if has_weight:
         if weight is not None:
-            weight = weight[None, :, None].expand(pred.size()).to(y_true.device)
-        metric = partial(metric, weight=weight)  # type: ignore
+            weight = jnp.broadcast_to(weight[None, :, None], pred.shape)
+        metric = partial(metric, weight=weight)
     return metric(
         pred,
-        torch.quantile(y_true, quantiles, dim=dim),
+        jnp.quantile(y_true, quantiles, axis=dim),
     )
 
 
+@jax.jit
 def sinkhorn_loss(
-    y_pred: torch.Tensor,
-    y_true: torch.Tensor,
-    backend: Literal["auto", "tensorized", "online", "multiscale"] = "auto",
+    y_pred: jax.Array,
+    y_true: jax.Array,
     p: int = 2,
-    blur: float = 0.1,
-    scaling: float = 0.7,
-    debias: bool = True,
-    weight: Optional[torch.Tensor] = None,
-) -> torch.Tensor:
+    batch_size: int = 1024,
+    epsilon: float = 0.1,
+    decay: float = 0.7,
+    weight: Optional[jax.Array] = None,
+) -> jax.Array:
     """
-    Compute the Sinkhorn divergence between two tensors.
+    Compute the Sinkhorn divergence between two arrays.
 
     Parameters
     ----------
-    y_pred : torch.Tensor
+    y_pred : jax.Array
         Predicted values.
-    y_true : torch.Tensor
+    y_true : jax.Array
         True values.
-    backend : Literal["auto", "tensorized", "online", "multiscale"], optional
-        The implementation that will be used in the background.
-        Default: "auto". Supported values:
-        - "auto": Choose backend automatically.
-        - "tensorized": Computes on a full cost/kernel matrix once and
-            and stores it on the device memory.
-        - "online": Computes cost/kernel values on-the-fly.
-        - "multiscale": Fast implementation that scales to millions of samples.
     p : int, optional
         Specifies the ground cost function between points. Default: 2.
         Supported values:
         - p=1: Euclidean distance.
-        - p=2: Squared Euclidean distance.
-    blur : float, optional
-        Scale associated with the temperature. Default: 0.1.
-    scaling : float, optional
-        Ratio of between successive values in the scaling descent. Default: 0.7.
-    debias : bool, optional
-        Compute unbiased Sinkhorn divergence. Default: True.
-    weight : Optional[torch.Tensor], optional
+        - p=2: Squared Euclidean distance, divided by 2.
+    batch_size : int, optional
+        If the number of points per sample is higher than this value,
+        the online version of the Sinkhorn divergence is used, computing
+        the cost matrix on the fly for `batch_size` points at a time
+        instead of storing it in memory. Default: 1024.
+    epsilon : float, optional
+        Regularization strength. Default: 0.1.
+    decay : float, optional
+        Ratio between successive values in the epsilon schedule.
+        Default: 0.7.
+    weight : Optional[jax.Array], optional
         Weights for each sample. Default: None.
 
     Returns
     -------
-    torch.Tensor
+    jax.Array
         Average Sinkhorn divergence across samples.
     """
-    loss_fn: Callable[[torch.Tensor, torch.Tensor], torch.Tensor] = SamplesLoss(
-        loss="sinkhorn",
-        backend=backend,
-        p=p,
-        blur=blur,
-        scaling=scaling,
-        debias=debias,
-    )
-    loss = loss_fn(y_pred, y_true)
-    if weight is None:
-        return loss.mean()
+    # Check inputs
+    if y_pred.shape != y_true.shape:
+        raise ValueError(
+            f"Incompatible shapes of `y_pred`: {y_pred.shape} and `y_true`: {y_true.shape}."
+        )
+    if y_pred.ndim != 3:
+        raise ValueError("Expected shape (n_simulations, n_timepoints, n_var).")
+
+    if p == 1:
+        cost_fn = costs.Euclidean()
+    elif p == 2:
+        cost_fn = costs.PNormP(p=p)
     else:
-        weight = weight.to(y_true.device)
-        return (loss @ weight) / weight.sum()
+        raise ValueError("Only p=1 and p=2 are supported.")
 
+    def sinkhorn_loss_one(x: jax.Array, y: jax.Array):
+        div, _ = sinkhorn_divergence.sinkhorn_divergence(
+            pointcloud.PointCloud,
+            x,
+            y,
+            epsilon=epsilon_scheduler.Epsilon(target=epsilon, decay=decay),
+            cost_fn=cost_fn,
+            batch_size=batch_size if y_pred.shape[0] > batch_size else None,
+        )
+        return div
 
-class LossFunction(Protocol):
-    def __call__(
-        self, y_pred: torch.Tensor, y_true: torch.Tensor, *args: Any, **kwargs: Any
-    ) -> torch.Tensor: ...
+    loss = jax.vmap(sinkhorn_loss_one, in_axes=1)(y_pred, y_true)
+
+    if weight is None:
+        return jnp.mean(loss)
+    else:
+        if weight.shape != loss.shape:
+            raise ValueError(
+                f"Incompatible shapes of `weight`: {weight.shape} and `loss`: {loss.shape}."
+            )
+        return jnp.sum(loss * weight) / jnp.sum(weight)
 
 
 def integrate_model(

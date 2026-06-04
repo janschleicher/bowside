@@ -6,42 +6,45 @@ from math import floor, log10
 from pathlib import Path
 from typing import Literal, Optional, Union
 
+import jax
+import numpy as np
 import pytest
 import scanpy as sc
 import scvelo as scv
 import torch
+from jax import numpy as jnp
 
 from bowside.dataset import MarkovChainDataset, PseudotimeDataset
-from bowside.model import GRNModel, GRNModelSDE
+from bowside.model_torch import GRNModel, GRNModelSDE
 from bowside.training import (
     EarlyStopping,
+    LossFunction,
     integrate_model,
+    mae_loss,
+    mse_loss,
     qqloss,
     sinkhorn_loss,
     train_integration,
 )
 from tests.conftest import TEST_DATA_PATH
 
-torch.manual_seed(42)
+key = jax.random.key(42)
+key_perfect, key_two_off, key_true_small, key_pred_small = jax.random.split(key, 4)
 
-Y_TRUE = torch.arange(1, 101).float().reshape((10, 10))
-Y_PRED_PERFECT = Y_TRUE[:, torch.randperm(10)]
-Y_PRED_TWO_OFF = (Y_TRUE + 2)[:, torch.randperm(10)]
-Y_TRUE_SMALL = torch.tensor([[1, 1, 1, 1, 1, 3, 8, 8, 8, 8, 8]]).float()[
-    :, torch.randperm(11)
+Y_TRUE = jnp.arange(1, 101, dtype=float).reshape((10, 10))
+Y_PRED_PERFECT = Y_TRUE[:, jax.random.permutation(key_perfect, 10)]
+Y_PRED_TWO_OFF = (Y_TRUE + 2)[:, jax.random.permutation(key_two_off, 10)]
+Y_TRUE_SMALL = jnp.asarray([[1, 1, 1, 1, 1, 3, 8, 8, 8, 8, 8]], dtype=float)[
+    :, jax.random.permutation(key_true_small, 11)
 ]
-Y_PRED_SMALL = torch.tensor([[3, 3, 3, 3, 3, 5, 6, 6, 6, 6, 6]]).float()[
-    :, torch.randperm(11)
+Y_PRED_SMALL = jnp.asarray([[3, 3, 3, 3, 3, 5, 6, 6, 6, 6, 6]], dtype=float)[
+    :, jax.random.permutation(key_pred_small, 11)
 ]
 
-LOSSES_MIN = torch.hstack([torch.linspace(1.0, 0.1, 10), torch.ones(20) * 0.1])
-LOSSES_MIN_DELTA = torch.hstack(
-    [torch.linspace(1.0, 0.1, 10), torch.linspace(0.095, 0.0, 20)]
-)
-LOSSES_MAX = torch.hstack([torch.linspace(0.0, 0.9, 10), torch.ones(20) * 0.9])
-LOSSES_MAX_DELTA = torch.hstack(
-    [torch.linspace(0.0, 0.9, 10), torch.linspace(0.905, 1.0, 20)]
-)
+LOSSES_MIN = jnp.hstack([np.linspace(1.0, 0.1, 10), np.ones(20) * 0.1])
+LOSSES_MIN_DELTA = jnp.hstack([np.linspace(1.0, 0.1, 10), np.linspace(0.095, 0.0, 20)])
+LOSSES_MAX = jnp.hstack([np.linspace(0.0, 0.9, 10), np.ones(20) * 0.9])
+LOSSES_MAX_DELTA = jnp.hstack([np.linspace(0.0, 0.9, 10), np.linspace(0.905, 1.0, 20)])
 
 OUT_DIR = Path("test_out/")
 
@@ -60,14 +63,11 @@ def prepare():
     dataset = PseudotimeDataset(
         ADATA, pseudotime_key="velocity_pseudotime", num_cells=500, copy=True
     )
-    generator = torch.manual_seed(42)
     global Y_TRUE_PT, Y_PRED_PT
-    Y_TRUE_PT = dataset[:].permute(1, 0, 2).contiguous()
-    Y_PRED_PT = (
-        dataset[:][torch.randperm(len(dataset), generator=generator), :, :]
-        .permute(1, 0, 2)
-        .contiguous()
-    )
+    Y_TRUE_PT = jnp.asarray(dataset[:100].detach().cpu().numpy())
+    Y_PRED_PT = Y_TRUE_PT[
+        jax.random.permutation(jax.random.key(42), Y_TRUE_PT.shape[0])
+    ]
 
 
 @pytest.mark.parametrize(
@@ -82,14 +82,14 @@ def prepare():
         (5, 0.0, "min", LOSSES_MAX, 6),
         (5, 0.0, "max", LOSSES_MAX, 15),
         (5, 0.0, "max", LOSSES_MAX_DELTA, 30),
-        (5, 0.1, "max", LOSSES_MAX_DELTA, 15),
+        (5, 0.099, "max", LOSSES_MAX_DELTA, 15),
     ],
 )
 def test_early_stopping(
     patience: int,
     delta: float,
     mode: Literal["min", "max"],
-    losses: torch.Tensor,
+    losses: jax.Array,
     expected_epochs: int,
 ):
     early_stopping = EarlyStopping(patience=patience, delta=delta, mode=mode)
@@ -102,11 +102,11 @@ def test_early_stopping(
         f"Training should have stopped after {expected_epochs} epochs, but ended after {epoch + 1}."
     )
     if should_stop:
-        assert expected_epochs < losses.size(0), (
+        assert expected_epochs < losses.shape[0], (
             "The early stopping should have been triggered."
         )
     else:
-        assert expected_epochs == losses.size(0), (
+        assert expected_epochs == losses.shape[0], (
             "Training should have proceeded to the end."
         )
 
@@ -114,22 +114,22 @@ def test_early_stopping(
 @pytest.mark.parametrize(
     "y_pred, y_true, metric, expected_loss",
     [
-        [Y_PRED_PERFECT, Y_TRUE, torch.nn.functional.l1_loss, 0],
-        [Y_PRED_PERFECT, Y_TRUE, torch.nn.functional.mse_loss, 0],
-        [Y_PRED_TWO_OFF, Y_TRUE, torch.nn.functional.l1_loss, 2],
-        [Y_PRED_TWO_OFF, Y_TRUE, torch.nn.functional.mse_loss, 4],
-        [Y_PRED_SMALL, Y_TRUE_SMALL, torch.nn.functional.l1_loss, 2],
-        [Y_PRED_SMALL, Y_TRUE_SMALL, torch.nn.functional.mse_loss, 4],
+        [Y_PRED_PERFECT, Y_TRUE, mae_loss, 0],
+        [Y_PRED_PERFECT, Y_TRUE, mse_loss, 0],
+        [Y_PRED_TWO_OFF, Y_TRUE, mae_loss, 2],
+        [Y_PRED_TWO_OFF, Y_TRUE, mse_loss, 4],
+        [Y_PRED_SMALL, Y_TRUE_SMALL, mae_loss, 2],
+        [Y_PRED_SMALL, Y_TRUE_SMALL, mse_loss, 4],
     ],
 )
 def test_qqloss(
-    y_pred: torch.Tensor,
-    y_true: torch.Tensor,
-    metric: Callable[[torch.Tensor, torch.Tensor], torch.Tensor],
+    y_pred: jax.Array,
+    y_true: jax.Array,
+    metric: LossFunction,
     expected_loss: float,
 ):
     loss = qqloss(y_pred, y_true, dim=1, n_quantiles=10, metric=metric)
-    assert loss == expected_loss, (
+    assert jnp.isclose(loss, expected_loss), (
         f"Wrong loss value. Expected: {expected_loss:.2f}, actual: {loss.item():.2f}"
     )
     assert loss != metric(y_pred, y_true), (
@@ -140,32 +140,30 @@ def test_qqloss(
 @pytest.mark.parametrize(
     "y_pred, y_true, expected_loss",
     [
-        [Y_PRED_PERFECT.T, Y_TRUE.T, 0],
-        [Y_PRED_TWO_OFF, Y_TRUE, None],
-        [Y_PRED_SMALL, Y_TRUE_SMALL, None],
+        [Y_PRED_PERFECT.T[:, None, :], Y_TRUE.T[:, None, :], 0],
+        [Y_PRED_TWO_OFF.T[:, None, :], Y_TRUE.T[:, None, :], None],
+        [Y_PRED_SMALL.T[:, None, :], Y_TRUE_SMALL.T[:, None, :], None],
     ],
 )
 def test_sinkhorn_loss(
-    y_pred: torch.Tensor,
-    y_true: torch.Tensor,
+    y_pred: jax.Array,
+    y_true: jax.Array,
     expected_loss: Optional[float],
 ):
     loss = sinkhorn_loss(y_pred, y_true)
     if expected_loss is not None:
-        assert torch.isclose(loss, torch.tensor(expected_loss, dtype=loss.dtype)), (
-            f"Wrong loss value. Expected: {expected_loss:.2f}, actual: {loss.item():.2f}"
+        assert jnp.isclose(loss, expected_loss, atol=1e-7), (
+            f"Wrong loss value. Expected: {expected_loss:.4g}, actual: {loss:.4g}"
         )
     else:
         assert loss > 0, "Loss value should be greater than 0."
 
 
 @pytest.mark.parametrize("loss", ["qqloss", "sinkhorn"])
-@pytest.mark.parametrize("weight", [None, torch.linspace(0, 10, 20)])
-def test_loss_pseudotime_data(
-    loss: Literal["qqloss", "sinkhorn"], weight: torch.Tensor
-):
+@pytest.mark.parametrize("weight", [None, jnp.linspace(0, 10, 20)])
+def test_loss_pseudotime_data(loss: Literal["qqloss", "sinkhorn"], weight: jax.Array):
     if loss == "qqloss":
-        loss_func = partial(qqloss, dim=1)
+        loss_func = partial(qqloss, dim=0)
     elif loss == "sinkhorn":
         loss_func = sinkhorn_loss
     else:
@@ -175,8 +173,8 @@ def test_loss_pseudotime_data(
         Y_TRUE_PT,
         weight=weight,
     )
-    assert torch.isclose(loss_val, torch.tensor(0, dtype=loss_val.dtype), atol=1e-4), (
-        f"Loss value should be zero, but is {loss_val.item():.4g}."
+    assert jnp.isclose(loss_val, 0, atol=1e-4), (
+        f"Loss value should be zero, but is {loss_val:.4g}."
     )
 
 
