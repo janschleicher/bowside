@@ -2,6 +2,11 @@
 
 from typing import Callable, Literal, Optional
 
+try:
+    from typing import Self
+except ImportError:
+    from typing_extensions import Self
+
 import diffrax
 import equinox as eqx
 import jax
@@ -133,7 +138,10 @@ class GRNModel(eqx.Module):
     def drift(self, t, y, args):
         return (
             jnp.exp(self.log_scale)
-            * self.activation(y @ (self.adj * self.adj_mask) + jnp.exp(self.log_bias))
+            * self.activation(
+                y @ (self.adj * jax.lax.stop_gradient(self.adj_mask))
+                + jnp.exp(self.log_bias)
+            )
             - jnp.exp(self.log_decay_rate) * y
         )
 
@@ -150,7 +158,7 @@ class GRNModel(eqx.Module):
         )
         return solution.ys
 
-    def prune(self, atol: float = 1e-3, rtol: float = 1e-3):
+    def prune(self, atol: float = 1e-3, rtol: float = 1e-3) -> Self:
         """
         Prune edges with a weight close to 0.
 
@@ -161,8 +169,10 @@ class GRNModel(eqx.Module):
         rtol : float, optional
             Relative threshold for pruning edges close to 0. Default: 1e-3.
         """
-        self.adj_mask = self.adj_mask * ~jnp.isclose(self.adj, 0, rtol=rtol, atol=atol)
-        self.adj = self.adj * self.adj_mask
+        adj_mask = self.adj_mask * ~jnp.isclose(self.adj, 0, rtol=rtol, atol=atol)
+        model = eqx.tree_at(lambda m: m.adj_mask, self, adj_mask)
+        adj = model.adj * model.adj_mask
+        return eqx.tree_at(lambda m: m.adj, model, adj)
 
     def n_genes(self) -> int:
         return self.adj.shape[0]
@@ -213,6 +223,7 @@ class GRNModelSDE(GRNModel):
         Key for the random number generator.
     """
 
+    fixed_sigma: bool
     log_sigma: jax.Array
     constant_noise: bool
 
@@ -248,6 +259,7 @@ class GRNModelSDE(GRNModel):
             key=key,
             **kwargs,
         )
+        self.fixed_sigma = fixed_sigma
         self.log_sigma = jnp.log(sigma)
         if not shared_sigma:
             if fixed_sigma:
@@ -257,7 +269,12 @@ class GRNModelSDE(GRNModel):
         self.constant_noise = constant_noise
 
     def diffusion(self, t, y, args):
-        sigma = jnp.broadcast_to(jnp.exp(self.log_sigma), y.shape)
+        if self.fixed_sigma:
+            sigma = jnp.broadcast_to(
+                jnp.exp(jax.lax.stop_gradient(self.log_sigma)), y.shape
+            )
+        else:
+            sigma = jnp.broadcast_to(jnp.exp(self.log_sigma), y.shape)
         if self.constant_noise:
             diag = sigma
         else:
