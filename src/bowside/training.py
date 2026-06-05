@@ -423,7 +423,7 @@ def train_step_integration(
     regularization_strength: float = 1e-4,
     key: Optional[jax.Array] = None,
     loss_kwargs: dict = {},
-) -> Tuple[float, GRNModel, optax.OptState]:
+) -> Tuple[jax.Array, GRNModel, optax.OptState]:
     """
     A single training step for a gene regulatory network ODE/SDE model,
     including  integration, loss evaluation, backpropagation, and weight
@@ -457,8 +457,9 @@ def train_step_integration(
 
     Returns
     -------
-    float
-        Value of the training loss after the training step.
+    Tuple[jax.Array, GRNModel, optax.OptState]
+        Training loss after the training step, updated model, and state
+        of the optimizer.
     """
     loss, grads = eqx.filter_value_and_grad(compute_loss)(
         model,
@@ -474,7 +475,7 @@ def train_step_integration(
     updates, opt_state = optimizer.update(grads, opt_state)
     model = eqx.apply_updates(model, updates)
 
-    return loss.item(), model, opt_state
+    return loss, model, opt_state
 
 
 @eqx.filter_jit
@@ -485,7 +486,7 @@ def test(
     loss_func: LossFunction,
     key: Optional[jax.Array] = None,
     loss_kwargs: dict = {},
-) -> float:
+) -> jax.Array:
     """
     Evaluate a gene regulatory network ODE/SDE model on a set of test
     sequences by integration.
@@ -508,8 +509,8 @@ def test(
 
     Returns
     -------
-    float
-        Value of the test lost.
+    jax.Array
+        Test lost.
     """
     loss = compute_loss(
         model,
@@ -520,7 +521,7 @@ def test(
         key=key,
         loss_kwargs=loss_kwargs,
     )
-    return loss.item()
+    return loss
 
 
 def train_integration(
@@ -540,7 +541,6 @@ def train_integration(
     early_stopping: bool = True,
     patience: int = 5,
     delta: float = 0.0,
-    optimization_mode: Literal["min", "max"] = "min",
     use_accelerator: bool = True,
     loss_kwargs: dict = {},
     num_workers_loader: int = 0,
@@ -592,12 +592,6 @@ def train_integration(
     delta : float, optional
         Minimum difference between consecutive loss values to consider
         as an improvement. Default: 0.0.
-    optimization_mode : Literal["min", "max"], optional
-        The direction of the optimization. If `early_stopping` is True,
-        in "min" mode, training will stop when the monitored quantity
-        stops decreasing, in "max" mode when it stops increasing. This
-        parameter is also used when `checkpoint` is set to "best".
-        Default: "min".
     use_accelerator : bool, optional
         Whether to use an accelerator (CUDA or MPS) if it is available.
         Default: True.
@@ -669,7 +663,7 @@ def train_integration(
             )
 
     if early_stopping:
-        early_stopping_instance = EarlyStopping(patience, delta, optimization_mode, log)
+        early_stopping_instance = EarlyStopping(patience, delta, "min", log)
 
     log.info(f"Using model of type {model.__class__.__name__}")
 
@@ -751,13 +745,6 @@ def train_integration(
 
     best_model_epoch = 0
     best_test_loss = jnp.inf
-    compare = operator.le
-    if optimization_mode == "max":
-        best_test_loss = -best_test_loss
-        compare = operator.ge
-        regularization_strength = (
-            -regularization_strength
-        )  # subtract regularization instead of adding
     opt_state = optimizer.init(eqx.filter(model, eqx.is_inexact_array))
     with logging_redirect_tqdm():
         for epoch in tqdm(range(num_epochs), desc="Training", unit="epoch"):
@@ -780,7 +767,7 @@ def train_integration(
                     key=sub_key,
                     loss_kwargs=loss_kwargs,
                 )
-                train_loss += loss
+                train_loss += loss.item()
             train_loss = train_loss / num_batches_train
             train_losses.append(train_loss)
 
@@ -799,7 +786,7 @@ def train_integration(
                     key=sub_key,
                     loss_kwargs=loss_kwargs,
                 )
-                test_loss += loss
+                test_loss += loss.item()
             test_loss = test_loss / num_batches_test
             test_losses.append(test_loss)
 
@@ -819,7 +806,7 @@ def train_integration(
                     / f"checkpoint_e{epoch:0{floor(log10(num_epochs)) + 1}d}.eqx"
                 )
             elif checkpoint == "best":
-                if compare(test_loss, best_test_loss):
+                if test_loss < best_test_loss:
                     model.save(checkpoint_dir / "checkpoint_best_model.eqx")
                     best_model_epoch = epoch
 
