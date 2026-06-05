@@ -8,18 +8,19 @@ from math import floor, log10
 from pathlib import Path
 from typing import Any, List, Literal, Optional, Protocol, Tuple, Union
 
+import equinox as eqx
 import jax
+import numpy as np
+import optax
 import torch
 from jax import numpy as jnp
 from ott.geometry import costs, epsilon_scheduler, pointcloud
 from ott.tools import sinkhorn_divergence
-from torchdiffeq import odeint, odeint_adjoint
-from torchsde import sdeint, sdeint_adjoint
 from tqdm.auto import tqdm
 from tqdm.contrib.logging import logging_redirect_tqdm
 
 from bowside.dataset import MarkovChainDataset, PseudotimeDataset
-from bowside.model_torch import GRNModel, GRNModelSDE
+from bowside.model import GRNModel, GRNModelSDE
 
 
 class EarlyStopping:
@@ -119,10 +120,6 @@ class EarlyStopping:
         return False
 
 
-class NaNTensorError(RuntimeError):
-    pass
-
-
 @jax.jit
 def mse_loss(
     y_pred: jax.Array, y_true: jax.Array, weight: Optional[jax.Array] = None
@@ -197,6 +194,7 @@ class LossFunction(Protocol):
     ) -> jax.Array: ...
 
 
+@eqx.filter_jit
 def qqloss(
     y_pred: jax.Array,
     y_true: jax.Array,
@@ -325,135 +323,107 @@ def sinkhorn_loss(
         return jnp.sum(loss * weight) / jnp.sum(weight)
 
 
+@eqx.filter_jit
 def integrate_model(
-    y0: torch.Tensor,
     model: GRNModel,
-    n_steps: Optional[int] = None,
-    time_points: Optional[torch.Tensor] = None,
-    adjoint: bool = False,
-    solver_method: Optional[str] = None,
-    dt: float = 0.001,
-    atol: float = 1e-4,
-    rtol: float = 1e-5,
-    adjoint_atol: float = 1e-4,
-    adjoint_rtol: float = 1e-5,
-) -> torch.Tensor:
+    y0: jax.Array,
+    time_points: jax.Array,
+    key: Optional[jax.Array] = None,
+) -> jax.Array:
     """
     Integrate a gene regulatory differential equation model (ODE or SDE).
 
     Parameters
     ----------
-    y0 : torch.Tensor
+    y0 : jax.Array
         Initial state of the differential equation of shape (batch_size, n_var).
     model : GRNModel
         The gene regulatory network model.
-    n_steps : Optional[int], optional
-        Number of steps to integrate. Mutually exclusive with
-        `time_points`. Using this option will generate `n_steps` equally
-        spaced time points from 0 to `n_steps` - 1. Default: None.
-    time_points : Optional[torch.Tensor], optional
-        Time points to use for integration. Mutually exclusive with
-        `num_steps`. Allows explicitly specifying the time points.
-        Default: None.
-    adjoint : bool, optional
-        Whether to use the adjoint method. Default: False.
-    solver_method : Optional[str], optional
-        Numerical solver to use. With the default None, a suitable method
-        is chosen depending on the model type.
-    dt : float, optional
-        The step size for the solver. Only used for SDEs. Default: 0.001.
-    atol : float, optional
-        Absolute tolerance. Default: 1e-4.
-    rtol : float, optional
-        Relative tolerance. Default: 1e-5.
-    adjoint_atol : float, optional
-        Absolute tolerance for backward adjoint solve. Only used when
-        `adjoint=True`. Default: 1e-4.
-    adjoint_rtol : float, optional
-        Relative tolerance for backward adjoint solve. Only used when
-        `adjoint=True`. Default: 1e-5.
+    time_points : jax.Array
+        Time points to use for integration.
+    key : Optional[jax.Array], optional
+        Key for the random number generator. Required for integration
+        with a GRNModelSDE. Default: None.
 
     Returns
     -------
-    torch.Tensor
-        State tensor of size (n_steps, batch_size, n_var).
+    jax.Array
+        State array of size (n_steps, batch_size, n_var).
 
     Raises
     ------
     TypeError
         An error is raised if the model is of the wrong type.
+    ValueError
+        An error is raised if no random key is passed when the model is
+        a GRNModelSDE.
     """
-    # Choose the correct integration method
     if isinstance(model, GRNModelSDE):
-        if adjoint:
-            int_func = partial(
-                sdeint_adjoint,
-                dt=dt,
-                adjoint_atol=adjoint_atol,
-                adjoint_rtol=adjoint_rtol,
+        if not isinstance(key, jax.Array):
+            raise ValueError(
+                "Integration of a SDE model requires a key for the random number generator."
             )
-        else:
-            int_func = partial(sdeint, dt=dt)
+        return jax.vmap(model, in_axes=[None, 0, 0])(
+            time_points, y0, jax.random.split(key, y0.shape[0])
+        )  # type: ignore
     elif isinstance(model, GRNModel):
-        if adjoint:
-            int_func = partial(
-                odeint_adjoint, adjoint_atol=adjoint_atol, adjoint_rtol=adjoint_rtol
-            )
-        else:
-            int_func = odeint
+        return jax.vmap(model, in_axes=[None, 0])(time_points, y0)  # type: ignore
     else:
-        raise TypeError(f"Expected type GRNModel, but got {type(model)}.")
-
-    if n_steps is None:
-        if time_points is None:
-            raise ValueError(
-                "Arguments `n_steps` and `time_points` are both `None`. You must set one of them."
-            )
-        else:
-            ts = time_points.to(y0.device, dtype=y0.dtype)
-    else:
-        if time_points is not None:
-            raise ValueError(
-                "Arguments `n_steps` and `time_points` are mutually exclusive. Choose one."
-            )
-        else:
-            ts = torch.linspace(
-                0, n_steps - 1, n_steps, dtype=y0.dtype, device=y0.device
-            )
-
-    # Integrate
-    pred = int_func(
-        model,
-        y0,
-        ts,
-        method=solver_method,
-        atol=atol,
-        rtol=rtol,
-        options={"dtype": torch.float32},
-    )
-    if not isinstance(pred, torch.Tensor):
-        pred = torch.as_tensor(pred)
-
-    return pred
+        TypeError(f"Expected type GRNModel, but got {type(model)}.")
 
 
-def train_step_integration(
-    y: torch.Tensor,
+def _raise_invalid_regularization(regularization: Literal["l1", "l2"]):
+    valid_regularizations = ["l1", "l2"]
+    if regularization not in valid_regularizations:
+        raise ValueError(
+            f"Invalid regularization option {regularization}. Must be one of {valid_regularizations}"
+        )
+
+
+@eqx.filter_jit
+def compute_loss(
     model: GRNModel,
-    optimizer: torch.optim.Optimizer,
+    y: jax.Array,
+    time_points: jax.Array,
     loss_func: LossFunction,
     regularization: Optional[Literal["l1", "l2"]] = None,
     regularization_strength: float = 1e-4,
-    time_points: Optional[torch.Tensor] = None,
-    adjoint: bool = False,
-    solver_method: Optional[str] = None,
-    dt: float = 0.001,
-    atol: float = 1e-4,
-    rtol: float = 1e-5,
-    adjoint_atol: float = 1e-4,
-    adjoint_rtol: float = 1e-5,
+    key: Optional[jax.Array] = None,
     loss_kwargs: dict = {},
-) -> float:
+) -> jax.Array:
+    y_pred = integrate_model(model, y[:, 0, :], time_points, key)
+    loss = loss_func(y_pred, y, **loss_kwargs)
+    if regularization is not None:
+        jax.debug.callback(_raise_invalid_regularization, regularization)
+        reg_idx = {"l1": 0, "l2": 1}
+        loss = jax.lax.switch(
+            reg_idx[regularization],
+            [
+                lambda x: x
+                + regularization_strength
+                * jnp.sum(jnp.abs(model.adj * model.adj_mask)),
+                lambda x: x
+                + regularization_strength
+                * jnp.sum(jnp.pow(model.adj * model.adj_mask, 2)),
+            ],
+            loss,
+        )
+    return loss
+
+
+@eqx.filter_jit
+def train_step_integration(
+    model: GRNModel,
+    y: jax.Array,
+    time_points: jax.Array,
+    optimizer: optax.GradientTransformationExtraArgs,
+    opt_state: optax.OptState,
+    loss_func: LossFunction,
+    regularization: Optional[Literal["l1", "l2"]] = None,
+    regularization_strength: float = 1e-4,
+    key: Optional[jax.Array] = None,
+    loss_kwargs: dict = {},
+) -> Tuple[float, GRNModel, optax.OptState]:
     """
     A single training step for a gene regulatory network ODE/SDE model,
     including  integration, loss evaluation, backpropagation, and weight
@@ -461,12 +431,16 @@ def train_step_integration(
 
     Parameters
     ----------
-    y : torch.Tensor
-        Training sequences of shape (n_steps, batch_size, n_var).
     model : GRNModel
         The gene regulatory network model.
-    optimizer : torch.optim.Optimizer
-        PyTorch optimizer for model training.
+    y : jax.Array
+        Training sequences of shape (n_steps, batch_size, n_var).
+    time_points : jax.Array
+        Time points to use for integration.
+    optimizer : optax.GradientTransformationExtraArgs
+        Optax optimizer for model training.
+    opt_state : optax.OptState
+        Current state of the optimizer.
     loss_func : LossFunction
         Loss function to optimize.
     regularization : Optional[Literal["l1", "l2"]], optional
@@ -475,26 +449,9 @@ def train_step_integration(
     regularization_strength : float, optional
         Relative weight of the regularization term added to the loss if
         `regularization` is not None. Default: 0.1.
-    time_points : Optional[torch.Tensor], optional
-        Time points to use for integration. Allows explicitly specifying
-        the time points. Default: None.
-    adjoint : bool, optional
-        Whether to use the adjoint method. Default: False.
-    solver_method : Optional[str], optional
-        Numerical solver to use. With the default None, a suitable method
-        is chosen depending on the model type.
-    dt : float, optional
-        The step size for the solver. Only used for SDEs. Default: 0.001.
-    atol : float, optional
-        Absolute tolerance. Default: 1e-4.
-    rtol : float, optional
-        Relative tolerance. Default: 1e-5.
-    adjoint_atol : float, optional
-        Absolute tolerance for backward adjoint solve. Only used when
-        `adjoint=True`. Default: 1e-4.
-    adjoint_rtol : float, optional
-        Relative tolerance for backward adjoint solve. Only used when
-        `adjoint=True`. Default: 1e-5.
+    key : Optional[jax.Array], optional
+        Key for the random number generator. Required for integration
+        with a GRNModelSDE. Default: None.
     loss_kwargs : dict, optional
         Additional keyword arguments for the loss function. Default: {}.
 
@@ -503,52 +460,30 @@ def train_step_integration(
     float
         Value of the training loss after the training step.
     """
-    n_steps = None
-    if time_points is None:
-        n_steps = y.shape[1]
-
-    model.train()
-    pred = integrate_model(
-        y0=y[:, 0, :],
-        model=model,
-        n_steps=n_steps,
-        time_points=time_points,
-        adjoint=adjoint,
-        solver_method=solver_method,
-        dt=dt,
-        atol=atol,
-        rtol=rtol,
-        adjoint_atol=adjoint_atol,
-        adjoint_rtol=adjoint_rtol,
+    loss, grads = eqx.filter_value_and_grad(compute_loss)(
+        model,
+        y,
+        time_points,
+        loss_func,
+        regularization=regularization,
+        regularization_strength=regularization_strength,
+        key=key,
+        loss_kwargs=loss_kwargs,
     )
-    if torch.any(pred.isnan()):
-        raise NaNTensorError("Numerical integration resulted in all NaN tensor.")
 
-    # Backpropagation
-    loss = loss_func(pred.contiguous(), y.permute(1, 0, 2).contiguous(), **loss_kwargs)
-    if loss.dim() >= 1:
-        loss = loss.sum()
-    if regularization is not None:
-        if regularization == "l1":
-            loss += regularization_strength * (model.adj * model.adj_mask).abs().sum()
-        elif regularization == "l2":
-            loss += regularization_strength * (model.adj * model.adj_mask).pow(2).sum()
-    loss.backward()
-    optimizer.step()
-    optimizer.zero_grad()
+    updates, opt_state = optimizer.update(grads, opt_state)
+    model = eqx.apply_updates(model, updates)
 
-    return loss.item()
+    return loss.item(), model, opt_state
 
 
+@eqx.filter_jit
 def test(
-    y: torch.Tensor,
     model: GRNModel,
+    y: jax.Array,
+    time_points: jax.Array,
     loss_func: LossFunction,
-    time_points: Optional[torch.Tensor] = None,
-    solver_method: Optional[str] = None,
-    dt: float = 0.001,
-    atol: float = 1e-4,
-    rtol: float = 1e-5,
+    key: Optional[jax.Array] = None,
     loss_kwargs: dict = {},
 ) -> float:
     """
@@ -557,24 +492,17 @@ def test(
 
     Parameters
     ----------
-    y : torch.Tensor
-        Test sequences of shape (n_steps, n_obs, n_var).
     model : GRNModel
         The gene regulatory network model.
+    y : jax.Array
+        Test sequences of shape (n_steps, n_obs, n_var).
+    time_points : jax.Array
+        Time points to use for integration.
     loss_func : LossFunction
         Loss function to optimize.
-    time_points : Optional[torch.Tensor], optional
-        Time points to use for integration. Allows explicitly specifying
-        the time points. Default: None.
-    solver_method : Optional[str], optional
-        Numerical solver to use. With the default None, a suitable method
-        is chosen depending on the model type.
-    dt : float, optional
-        The step size for the solver. Only used for SDEs. Default: 0.001.
-    atol : float, optional
-        Absolute tolerance. Default: 1e-4.
-    rtol : float, optional
-        Relative tolerance. Default: 1e-5.
+    key : Optional[jax.Array], optional
+        Key for the random number generator. Required for integration
+        with a GRNModelSDE. Default: None.
     loss_kwargs : dict, optional
         Additional keyword arguments for the loss function. Default: {}.
 
@@ -583,41 +511,24 @@ def test(
     float
         Value of the test lost.
     """
-    n_steps = None
-    if time_points is None:
-        n_steps = y.shape[1]
-
-    model.eval()
-    with torch.no_grad():
-        pred = integrate_model(
-            y0=y[:, 0, :],
-            model=model,
-            n_steps=n_steps,
-            time_points=time_points,
-            adjoint=False,
-            solver_method=solver_method,
-            dt=dt,
-            atol=atol,
-            rtol=rtol,
-        )
-
-        if torch.any(pred.isnan()):
-            raise NaNTensorError("Numerical integration resulted in all NaN tensor.")
-
-        loss = loss_func(
-            pred.contiguous(), y.permute(1, 0, 2).contiguous(), **loss_kwargs
-        )
-        if loss.dim() >= 1:
-            loss = loss.sum()
-
-        return loss.item()
+    loss = compute_loss(
+        model,
+        y,
+        time_points,
+        loss_func,
+        regularization=None,
+        key=key,
+        loss_kwargs=loss_kwargs,
+    )
+    return loss.item()
 
 
 def train_integration(
     dataset: Union[MarkovChainDataset, PseudotimeDataset],
     model: GRNModel,
-    optimizer: torch.optim.Optimizer,
+    optimizer: optax.GradientTransformationExtraArgs,
     loss_func: LossFunction,
+    key: jax.Array,
     regularization: Optional[Literal["l1", "l2"]] = None,
     regularization_strength: float = 1e-4,
     pruning_frequency: Optional[int] = 50,
@@ -631,19 +542,12 @@ def train_integration(
     delta: float = 0.0,
     optimization_mode: Literal["min", "max"] = "min",
     use_accelerator: bool = True,
-    adjoint: bool = False,
-    solver_method: Optional[str] = None,
-    dt: float = 0.001,
-    atol: float = 1e-4,
-    rtol: float = 1e-5,
-    adjoint_atol: float = 1e-4,
-    adjoint_rtol: float = 1e-5,
     loss_kwargs: dict = {},
     num_workers_loader: int = 0,
     checkpoint: Optional[Union[int, Literal["best", "final"]]] = None,
     checkpoint_dir: Optional[Union[str, Path]] = None,
     logger: Optional[logging.Logger] = None,
-) -> Tuple[List[float], List[float]]:
+) -> Tuple[GRNModel, List[float], List[float], optax.OptState]:
     """
     Train a gene regulatory network ODE/SDE model using integration.
 
@@ -653,10 +557,12 @@ def train_integration(
         Dataset to use for training.
     model : GRNModel
         The gene regulatory network model.
-    optimizer : torch.optim.Optimizer
-        PyTorch optimizer for model training.
+    optimizer : optax.GradientTransformationExtraArgs
+        Optax optimizer for model training.
     loss_func : LossFunction
         Loss function to optimize.
+    key : jax.Array
+        Key for the random number generator.
     regularization : Optional[Literal["l1", "l2"]], optional
         Regularization method for the adjacency method. Options are "l1"
         and "l2". With the default, None, no regularization is applied.
@@ -695,23 +601,6 @@ def train_integration(
     use_accelerator : bool, optional
         Whether to use an accelerator (CUDA or MPS) if it is available.
         Default: True.
-    adjoint : bool, optional
-        Whether to use the adjoint method. Default: False.
-    solver_method : Optional[str], optional
-        Numerical solver to use. With the default None, a suitable method
-        is chosen depending on the model type.
-    dt : float, optional
-        The step size for the solver. Only used for SDEs. Default: 0.001.
-    atol : float, optional
-        Absolute tolerance. Default: 1e-4.
-    rtol : float, optional
-        Relative tolerance. Default: 1e-5.
-    adjoint_atol : float, optional
-        Absolute tolerance for backward adjoint solve. Only used when
-        `adjoint=True`. Default: 1e-4.
-    adjoint_rtol : float, optional
-        Relative tolerance for backward adjoint solve. Only used when
-        `adjoint=True`. Default: 1e-5.
     loss_kwargs : dict, optional
         Additional keyword arguments for the loss function. Default: {}.
     num_workers_loader : int, optional
@@ -784,19 +673,23 @@ def train_integration(
 
     log.info(f"Using model of type {model.__class__.__name__}")
 
+    # TODO: Run on GPU
     # Select GPU if available
-    device = None
-    if use_accelerator and torch.accelerator.is_available():
-        device = torch.accelerator.current_accelerator()
-    if device is None:
-        device = torch.device("cpu")
-    model = model.to(device)
-    log.info(f"Running on device '{device}'")
+    # device = None
+    # if use_accelerator and torch.accelerator.is_available():
+    #     device = torch.accelerator.current_accelerator()
+    # if device is None:
+    #     device = torch.device("cpu")
+    # model = model.to(device)
+    # log.info(f"Running on device '{device}'")
 
     time_points = None
     if isinstance(dataset, PseudotimeDataset):
-        time_points = dataset.time_points
-    elif not isinstance(dataset, MarkovChainDataset):
+        time_points = jnp.asarray(dataset.time_points.numpy().copy())
+    elif isinstance(dataset, MarkovChainDataset):
+        n_steps = dataset.markov_chains.shape[1]
+        time_points = jnp.linspace(0, n_steps - 1, n_steps)
+    else:
         raise TypeError(
             "Incompatible dataset type. Use `MarkovChainDataset` or `PseudotimeDataset`."
         )
@@ -857,7 +750,7 @@ def train_integration(
     log.info("Starting GRN model training.")
 
     best_model_epoch = 0
-    best_test_loss = torch.inf
+    best_test_loss = jnp.inf
     compare = operator.le
     if optimization_mode == "max":
         best_test_loss = -best_test_loss
@@ -865,47 +758,48 @@ def train_integration(
         regularization_strength = (
             -regularization_strength
         )  # subtract regularization instead of adding
+    opt_state = optimizer.init(eqx.filter(model, eqx.is_inexact_array))
     with logging_redirect_tqdm():
         for epoch in tqdm(range(num_epochs), desc="Training", unit="epoch"):
             # Training
             train_loss = 0.0
             for data in trainloader:
-                y = data.to(device)
-                train_loss += train_step_integration(
-                    y=y,
+                key, sub_key = jax.random.split(key)
+                y = jnp.asarray(
+                    data.numpy().copy()
+                )  # TODO: look up how to use torch dataloader properly
+                loss, model, opt_state = train_step_integration(
                     model=model,
+                    y=y,
                     optimizer=optimizer,
+                    opt_state=opt_state,
                     loss_func=loss_func,
                     regularization=regularization,
                     regularization_strength=regularization_strength,
                     time_points=time_points,
-                    adjoint=adjoint,
-                    solver_method=solver_method,
-                    dt=dt,
-                    atol=atol,
-                    rtol=rtol,
-                    adjoint_atol=adjoint_atol,
-                    adjoint_rtol=adjoint_rtol,
+                    key=sub_key,
                     loss_kwargs=loss_kwargs,
                 )
+                train_loss += loss
             train_loss = train_loss / num_batches_train
             train_losses.append(train_loss)
 
             # Evaluation
             test_loss = 0.0
             for data in testloader:
-                y = data.to(device)
-                test_loss += test(
-                    y=y,
+                key, sub_key = jax.random.split(key)
+                y = jnp.asarray(
+                    data.numpy().copy()
+                )  # TODO: look up how to use torch dataloader properly
+                loss = test(
                     model=model,
-                    loss_func=loss_func,
+                    y=y,
                     time_points=time_points,
-                    solver_method=solver_method,
-                    dt=dt,
-                    atol=atol,
-                    rtol=rtol,
+                    loss_func=loss_func,
+                    key=sub_key,
                     loss_kwargs=loss_kwargs,
                 )
+                test_loss += loss
             test_loss = test_loss / num_batches_test
             test_losses.append(test_loss)
 
@@ -916,32 +810,17 @@ def train_integration(
             # Prune edges close to 0
             if regularization is not None and pruning_frequency is not None:
                 if epoch % pruning_frequency == 0:
-                    model.prune(atol=pruning_atol, rtol=pruning_rtol)
+                    model = model.prune(atol=pruning_atol, rtol=pruning_rtol)
 
             # Save checkpoint
             if isinstance(checkpoint, int) and epoch % checkpoint == 0:
-                torch.save(
-                    {
-                        "epoch": epoch,
-                        "model_state_dict": model.state_dict(),
-                        "optimizer_state_dict": optimizer.state_dict(),
-                        "train_loss": train_loss,
-                        "test_loss": test_loss,
-                    },
+                model.save(
                     checkpoint_dir
-                    / f"checkpoint_e{epoch:0{floor(log10(num_epochs)) + 1}d}.tar",
+                    / f"checkpoint_e{epoch:0{floor(log10(num_epochs)) + 1}d}.eqx"
                 )
             elif checkpoint == "best":
                 if compare(test_loss, best_test_loss):
-                    torch.save(
-                        {
-                            "model_state_dict": model.state_dict(),
-                            "optimizer_state_dict": optimizer.state_dict(),
-                            "train_loss": train_loss,
-                            "test_loss": test_loss,
-                        },
-                        checkpoint_dir / "checkpoint_best_model.tar",
-                    )
+                    model.save(checkpoint_dir / "checkpoint_best_model.eqx")
                     best_model_epoch = epoch
 
             # Check early stopping
@@ -954,23 +833,17 @@ def train_integration(
         # Prune edges close to 0
         if regularization is not None and pruning_frequency is not None:
             log.info("Final pruning step of edges with weight close to 0.")
-            model.prune(atol=pruning_atol, rtol=pruning_rtol)
+            model = model.prune(atol=pruning_atol, rtol=pruning_rtol)
 
         # Save final model
         if checkpoint is not None:
-            torch.save(
-                {
-                    "model_state_dict": model.state_dict(),
-                    "optimizer_state_dict": optimizer.state_dict(),
-                    "train_loss": train_loss,
-                    "test_loss": test_loss,
-                },
-                checkpoint_dir / "checkpoint_final_model.tar",
-            )
+            model.save(checkpoint_dir / "checkpoint_final_model.eqx")
+            np.save(checkpoint_dir / "train_losses.npy", np.asarray(train_losses))
+            np.save(checkpoint_dir / "test_losses.npy", np.asarray(test_losses))
             if checkpoint == "best":
                 log.info(
                     f"Best model was at epoch {best_model_epoch}, saved "
                     f"as {str(checkpoint_dir / 'checkpoint_best_model.tar')}"
                 )
 
-        return train_losses, test_losses
+        return model, train_losses, test_losses, opt_state
