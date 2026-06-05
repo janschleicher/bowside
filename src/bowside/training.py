@@ -323,6 +323,10 @@ def sinkhorn_loss(
         return jnp.sum(loss * weight) / jnp.sum(weight)
 
 
+def _raise_wrong_model(model):
+    pass
+
+
 @eqx.filter_jit
 def integrate_model(
     model: GRNModel,
@@ -335,10 +339,10 @@ def integrate_model(
 
     Parameters
     ----------
-    y0 : jax.Array
-        Initial state of the differential equation of shape (batch_size, n_var).
     model : GRNModel
         The gene regulatory network model.
+    y0 : jax.Array
+        Initial state of the differential equation of shape (batch_size, n_var).
     time_points : jax.Array
         Time points to use for integration.
     key : Optional[jax.Array], optional
@@ -369,7 +373,7 @@ def integrate_model(
     elif isinstance(model, GRNModel):
         return jax.vmap(model, in_axes=[None, 0])(time_points, y0)  # type: ignore
     else:
-        TypeError(f"Expected type GRNModel, but got {type(model)}.")
+        raise TypeError(f"Expected type GRNModel, but got {type(model)}.")
 
 
 def _raise_invalid_regularization(regularization: Literal["l1", "l2"]):
