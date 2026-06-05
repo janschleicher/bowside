@@ -323,10 +323,6 @@ def sinkhorn_loss(
         return jnp.sum(loss * weight) / jnp.sum(weight)
 
 
-def _raise_wrong_model(model):
-    pass
-
-
 @eqx.filter_jit
 def integrate_model(
     model: GRNModel,
