@@ -1,6 +1,8 @@
 """Module for dynamic gene regulatory network model."""
 
-from typing import Callable, Literal, Optional
+import json
+from pathlib import Path
+from typing import Callable, Literal, Optional, Union
 
 try:
     from typing import Self
@@ -58,6 +60,7 @@ class GRNModel(eqx.Module):
     solver: diffrax.AbstractSolver
     dt: float
     step_size_controller: diffrax.AbstractStepSizeController
+    hyperparams: dict
 
     def __init__(
         self,
@@ -75,6 +78,16 @@ class GRNModel(eqx.Module):
         **kwargs,
     ):
         super().__init__(**kwargs)
+
+        # Hyperparameters to facilitate model saving and loading
+        self.hyperparams = {
+            "n_genes": n_genes,
+            "activation": activation,
+            "solver_name": solver.__class__.__name__,
+            "solver_atol": solver_atol,
+            "solver_rtol": solver_rtol,
+            "dt": dt,
+        }
 
         adj_key, sparse_key, bias_key, decay_key = jax.random.split(key, 4)
 
@@ -177,6 +190,24 @@ class GRNModel(eqx.Module):
     def n_genes(self) -> int:
         return self.adj.shape[0]
 
+    def save(self, filename: Union[str, Path]):
+        with open(filename, "wb") as f:
+            hyperparam_str = json.dumps(self.hyperparams)
+            f.write((hyperparam_str + "\n").encode())
+            eqx.tree_serialise_leaves(f, self)
+
+    @classmethod
+    def load(cls, filename: Union[str, Path]) -> Self:
+        with open(filename, "rb") as f:
+            hyperparams = json.loads(f.readline().decode())
+            solver_name = hyperparams.pop("solver_name")
+            model = cls(
+                **hyperparams,
+                solver=getattr(diffrax, solver_name)(),
+                key=jax.random.key(0),
+            )
+            return eqx.tree_deserialise_leaves(f, model)
+
 
 class GRNModelSDE(GRNModel):
     """
@@ -258,6 +289,14 @@ class GRNModelSDE(GRNModel):
             dt=dt,
             key=key,
             **kwargs,
+        )
+        self.hyperparams.update(
+            {
+                "sigma": sigma,
+                "shared_sigma": shared_sigma,
+                "fixed_sigma": fixed_sigma,
+                "constant_noise": constant_noise,
+            }
         )
         self.fixed_sigma = fixed_sigma
         self.log_sigma = jnp.log(sigma)
