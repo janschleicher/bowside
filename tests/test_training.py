@@ -1,13 +1,14 @@
 import os
 import shutil
-from collections.abc import Callable
 from functools import partial
 from math import floor, log10
 from pathlib import Path
 from typing import Literal, Optional, Union
 
+import equinox as eqx
 import jax
 import numpy as np
+import optax
 import pytest
 import scanpy as sc
 import scvelo as scv
@@ -15,7 +16,7 @@ import torch
 from jax import numpy as jnp
 
 from bowside.dataset import MarkovChainDataset, PseudotimeDataset
-from bowside.model_torch import GRNModel, GRNModelSDE
+from bowside.model import GRNModel, GRNModelSDE
 from bowside.training import (
     EarlyStopping,
     LossFunction,
@@ -180,20 +181,20 @@ def test_loss_pseudotime_data(loss: Literal["qqloss", "sinkhorn"], weight: jax.A
 
 @pytest.mark.parametrize(
     "model_type, regularization, batch_size, num_sims, shared_sigma, fixed_sigma, "
-    "constant_noise, dataset_type, checkpoint, checkpoint_dir, adjoint",
+    "constant_noise, dataset_type, checkpoint, checkpoint_dir",
     [
-        ["ode", None, None, 100, None, None, None, "markov", "final", OUT_DIR, False],
-        ["ode", "l1", None, 100, None, None, None, "markov", "final", OUT_DIR, False],
-        ["ode", "l2", None, 100, None, None, None, "markov", "final", OUT_DIR, False],
-        ["ode", None, None, 100, None, None, None, "markov", "best", OUT_DIR, False],
-        ["ode", None, None, 100, None, None, None, "pseudo", None, None, True],
-        ["ode", None, 100, 500, None, None, None, "markov", 1, "test_out", False],
-        ["ode", None, 100, 500, None, None, None, "pseudo", 1, None, False],
-        ["sde", None, None, 100, True, True, True, "markov", "final", OUT_DIR, False],
-        ["sde", None, None, 100, True, True, True, "markov", "best", OUT_DIR, False],
-        ["sde", None, None, 100, True, True, False, "markov", None, None, True],
-        ["sde", None, None, 100, True, False, True, "markov", None, None, False],
-        ["sde", None, None, 100, False, False, True, "markov", None, None, False],
+        ["ode", None, None, 100, None, None, None, "markov", "final", OUT_DIR],
+        ["ode", "l1", None, 100, None, None, None, "markov", "final", OUT_DIR],
+        ["ode", "l2", None, 100, None, None, None, "markov", "final", OUT_DIR],
+        ["ode", None, None, 100, None, None, None, "markov", "best", OUT_DIR],
+        ["ode", None, None, 100, None, None, None, "pseudo", None, None],
+        ["ode", None, 100, 500, None, None, None, "markov", 1, "test_out"],
+        ["ode", None, 100, 500, None, None, None, "pseudo", 1, None],
+        ["sde", None, None, 100, True, True, True, "markov", "final", OUT_DIR],
+        ["sde", None, None, 100, True, True, True, "markov", "best", OUT_DIR],
+        ["sde", None, None, 100, True, True, False, "markov", None, None],
+        ["sde", None, None, 100, True, False, True, "markov", None, None],
+        ["sde", None, None, 100, False, False, True, "markov", None, None],
     ],
 )
 def test_train_integration(
@@ -207,25 +208,12 @@ def test_train_integration(
     dataset_type: Literal["markov", "pseudo"],
     checkpoint: Optional[Union[int, Literal["best", "final"]]],
     checkpoint_dir: Optional[Path],
-    adjoint: bool,
 ):
     torch.manual_seed(42)
     dt = 0.1
     atol = 0.1
     rtol = 0.1
-    solver_method = None
-    if model_type == "ode" and batch_size:
-        solver_method = "adaptive_heun"
-    elif model_type == "sde":
-        solver_method = "milstein"
-    loss_metric = torch.nn.functional.mse_loss
-
-    # Select GPU if available
-    device = None
-    if torch.accelerator.is_available():
-        device = torch.accelerator.current_accelerator()
-    if not device:
-        device = torch.device("cpu")
+    loss_metric = mse_loss
 
     # Setup dataset and model, with highly variable genes
     adata = ADATA.copy()
@@ -237,6 +225,8 @@ def test_train_integration(
             num_chains=num_sims,
             mask_var="highly_variable",
         )
+        n_steps = dataset.markov_chains.shape[1]
+        time_points = jnp.linspace(0, n_steps - 1, n_steps)
     elif dataset_type == "pseudo":
         dataset = PseudotimeDataset(
             adata,
@@ -244,75 +234,67 @@ def test_train_integration(
             mask_var="highly_variable",
             pseudotime_key="velocity_pseudotime",
         )
+        time_points = jnp.asarray(dataset.time_points.numpy().copy())
     else:
         raise ValueError("Invalid dataset type. Should be one of ['markov', 'pseudo'].")
+    key = jax.random.key(42)
+    key, sub_key = jax.random.split(key)
     match model_type:
         case "ode":
-            model = GRNModel(n_genes=dataset.n_genes())
+            model = GRNModel(
+                n_genes=dataset.n_genes(),
+                solver_atol=atol,
+                solver_rtol=rtol,
+                dt=dt,
+                key=sub_key,
+            )
         case "sde":
             model = GRNModelSDE(
                 n_genes=dataset.n_genes(),
                 shared_sigma=shared_sigma,
                 fixed_sigma=fixed_sigma,
                 constant_noise=constant_noise,
+                solver_atol=atol,
+                solver_rtol=rtol,
+                dt=dt,
+                key=sub_key,
             )
-    model.to(device)
 
-    adj_pre = model.adj.clone().detach()
+    adj_pre = model.adj.copy()
+    y = jnp.asarray(dataset[:].numpy().copy())
+    key, sub_key = jax.random.split(key)
+    y_pred = integrate_model(model, y[:, 0, :], time_points=time_points, key=sub_key)
+    untrained_loss = qqloss(y_pred, y, dim=0, metric=loss_metric)
 
-    y = dataset[:].to(device)
-    y_pred = integrate_model(
-        y[:, 0, :],
-        model,
-        n_steps=y.shape[1],
-        solver_method=solver_method,
-        dt=dt,
-        atol=atol,
-        rtol=rtol,
-    )
-    untrained_loss = qqloss(y_pred, y.permute(1, 0, 2), dim=1, metric=loss_metric)
-
-    optim = torch.optim.Adam(model.parameters())
+    optim = optax.adam(learning_rate=0.001)
     if not batch_size:
         num_epochs = 5
     else:
         num_epochs = 2
-    _, _ = train_integration(
+    key, sub_key = jax.random.split(key)
+    model, _, _, _ = train_integration(
         dataset,
         model,
         optim,
         qqloss,
+        sub_key,
         regularization=regularization,
         batch_size=batch_size,
         num_epochs=num_epochs,
-        adjoint=adjoint,
-        solver_method=solver_method,
-        dt=dt,
-        atol=atol,
-        rtol=rtol,
-        loss_kwargs={"metric": loss_metric, "dim": 1},
+        loss_kwargs={"metric": loss_metric, "dim": 0},
         checkpoint=checkpoint,
         checkpoint_dir=checkpoint_dir,
     )
 
-    y_pred = integrate_model(
-        y[:, 1, :],
-        model,
-        n_steps=y.shape[1],
-        solver_method=solver_method,
-        dt=dt,
-        atol=atol,
-        rtol=rtol,
-    )
-    trained_loss = qqloss(y_pred, y.permute(1, 0, 2), dim=1, metric=loss_metric)
+    key, sub_key = jax.random.split(key)
+    y_pred = integrate_model(model, y[:, 0, :], time_points=time_points, key=sub_key)
+    trained_loss = qqloss(y_pred, y, dim=0, metric=loss_metric)
 
     # Weak checks that training did something
     assert trained_loss <= untrained_loss, (
         f"Training should reduce the loss; before: {untrained_loss}, after: {trained_loss}."
     )
-    assert torch.any(model.adj != adj_pre), (
-        "Training should change the adjacency matrix."
-    )
+    assert jnp.any(model.adj != adj_pre), "Training should change the adjacency matrix."
 
     # Check if model was saved
     if checkpoint is not None:
@@ -325,165 +307,30 @@ def test_train_integration(
             for i in range(0, num_epochs, checkpoint):
                 assert os.path.isfile(
                     checkpoint_dir
-                    / f"checkpoint_e{i:0{floor(log10(num_epochs)) + 1}d}.tar"
+                    / f"checkpoint_e{i:0{floor(log10(num_epochs)) + 1}d}.eqx"
                 ), f"Checkpoint for epoch {i} is missing."
-        assert os.path.isfile(checkpoint_dir / "checkpoint_final_model.tar"), (
+        assert os.path.isfile(checkpoint_dir / "checkpoint_final_model.eqx"), (
             "Final model was not saved."
         )
         if checkpoint == "best":
-            assert os.path.isfile(checkpoint_dir / "checkpoint_best_model.tar"), (
+            assert os.path.isfile(checkpoint_dir / "checkpoint_best_model.eqx"), (
                 "Best model was not saved."
             )
         shutil.rmtree(checkpoint_dir)
 
 
-@pytest.mark.parametrize(
-    "regularization, pruning_frequency",
-    [[None, None], ["l1", None], ["l1", 2], ["l2", None]],
-)
-def test_train_integration_maximization(
-    regularization: Optional[Literal["l1", "l2"]], pruning_frequency: Optional[int]
-):
-    torch.manual_seed(42)
-    dt = 0.1
-    atol = 0.1
-    rtol = 0.1
-    solver_method = "adaptive_heun"
-    loss_metric = torch.nn.functional.mse_loss
-    regularization_strength = 0.1
-
-    # Select GPU if available
-    device = None
-    if torch.accelerator.is_available():
-        device = torch.accelerator.current_accelerator()
-    if not device:
-        device = torch.device("cpu")
-
-    # Setup dataset and model, with highly variable genes
-    adata = ADATA.copy()
-    n_genes = 10
-    sc.pp.highly_variable_genes(adata, n_top_genes=n_genes)
-    dataset = PseudotimeDataset(
-        adata,
-        num_cells=100,
-        mask_var="highly_variable",
-        pseudotime_key="velocity_pseudotime",
-    )
-
-    model = GRNModel(n_genes=dataset.n_genes())
-    model.to(device)
-
-    adj_pre = model.adj.clone().detach()
-
-    y = dataset[:].to(device)
-    y_pred = integrate_model(
-        y[:, 0, :],
-        model,
-        n_steps=y.shape[1],
-        solver_method=solver_method,
-        dt=dt,
-        atol=atol,
-        rtol=rtol,
-    )
-
-    # Invert loss function to test maximization
-    def qqloss_max(
-        y_pred: torch.Tensor,
-        y_true: torch.Tensor,
-        dim: int = 1,
-        n_quantiles: int = 100,
-        metric: Callable[
-            [torch.Tensor, torch.Tensor], torch.Tensor
-        ] = torch.nn.functional.mse_loss,
-        weight: Optional[torch.Tensor] = None,
-    ):
-        return -qqloss(
-            y_pred=y_pred,
-            y_true=y_true,
-            dim=dim,
-            n_quantiles=n_quantiles,
-            metric=metric,
-            weight=weight,
-        )
-
-    untrained_loss = qqloss_max(y_pred, y.permute(1, 0, 2), dim=1, metric=loss_metric)
-    if regularization is not None:
-        if regularization == "l1":
-            untrained_loss -= (
-                regularization_strength * (model.adj * model.adj_mask).abs().sum()
-            )
-        elif regularization == "l2":
-            untrained_loss -= (
-                regularization_strength * (model.adj * model.adj_mask).pow(2).sum()
-            )
-
-    optim = torch.optim.Adam(model.parameters(), maximize=True)
-    num_epochs = 5
-
-    _, _ = train_integration(
-        dataset,
-        model,
-        optim,
-        qqloss_max,
-        regularization=regularization,
-        regularization_strength=regularization_strength,
-        pruning_frequency=pruning_frequency,
-        num_epochs=num_epochs,
-        optimization_mode="max",
-        solver_method=solver_method,
-        dt=dt,
-        atol=atol,
-        rtol=rtol,
-        loss_kwargs={"metric": loss_metric, "dim": 1},
-        checkpoint="best",
-    )
-
-    y_pred = integrate_model(
-        y[:, 1, :],
-        model,
-        n_steps=y.shape[1],
-        solver_method=solver_method,
-        dt=dt,
-        atol=atol,
-        rtol=rtol,
-    )
-    trained_loss = qqloss_max(y_pred, y.permute(1, 0, 2), dim=1, metric=loss_metric)
-    if regularization is not None:
-        if regularization == "l1":
-            trained_loss -= (
-                regularization_strength * (model.adj * model.adj_mask).abs().sum()
-            )
-        elif regularization == "l2":
-            trained_loss -= (
-                regularization_strength * (model.adj * model.adj_mask).pow(2).sum()
-            )
-
-    # Weak checks that training did something
-    assert trained_loss >= untrained_loss, (
-        f"Training should increase the target; before: {untrained_loss}, after: {trained_loss}."
-    )
-    assert torch.any(model.adj != adj_pre), (
-        "Training should change the adjacency matrix."
-    )
-
-    # Check if model was saved
-    checkpoint_dir = Path("./checkpoints")
-    assert checkpoint_dir.exists(), "Checkpoint directory was not created."
-    assert os.path.isfile(checkpoint_dir / "checkpoint_best_model.tar"), (
-        "Best model was not saved."
-    )
-    shutil.rmtree(checkpoint_dir)
-
-
 def test_training_exceptions():
-    model = GRNModel(n_genes=dataset.n_genes())
-    optimizer = torch.optim.Adam(model.parameters())
+    key = jax.random.key(42)
+    key, sub_key = jax.random.split(key)
+    model = GRNModel(n_genes=dataset.n_genes(), key=sub_key)
+    optimizer = optax.adam(learning_rate=0.001)
     train_func = partial(
         train_integration,
         dataset=dataset,
         model=model,
         optimizer=optimizer,
         loss_func=sinkhorn_loss,
+        key=sub_key,
     )
     # Wrong checkpoint configuration
     with pytest.raises(
@@ -502,49 +349,45 @@ def test_training_exceptions():
 
     # Wrong model
     y0 = dataset[:][:, 0, :]
-    wrong_model = torch.nn.Module()
+    wrong_model = eqx.nn.MLP(5, 5, 5, 5, key=sub_key)
     with pytest.raises(TypeError, match="Expected type GRNModel, but got "):
-        integrate_model(y0, wrong_model, 10)  # type: ignore
-
-    # Wrong number of steps/time points configuration
-    with pytest.raises(
-        ValueError,
-        match="Arguments `n_steps` and `time_points` are both `None`. You must set one of them.",
-    ):
-        integrate_model(y0, model)
-    with pytest.raises(
-        ValueError,
-        match="Arguments `n_steps` and `time_points` are mutually exclusive. Choose one.",
-    ):
-        integrate_model(y0, model, 10, dataset.time_points)
+        integrate_model(wrong_model, y0, jnp.ones(10))  # type: ignore
 
     # Wrong dataset type
     with pytest.raises(
         TypeError,
         match="Incompatible dataset type. Use `MarkovChainDataset` or `PseudotimeDataset`.",
     ):
-        train_integration(ADATA, model, optimizer, sinkhorn_loss)  # type: ignore
+        train_integration(ADATA, model, optimizer, sinkhorn_loss, sub_key)  # type: ignore
 
     # Wrong parameters for early stopping
     with pytest.raises(TypeError, match="Parameter `patience` should be int, was"):
-        train_integration(dataset, model, optimizer, sinkhorn_loss, patience=0.2)  # type: ignore
-    with pytest.raises(
-        ValueError, match="Parameter `patience` must be strictly positive."
-    ):
-        train_integration(dataset, model, optimizer, sinkhorn_loss, patience=-7)
-    with pytest.raises(TypeError, match="Parameter `delta` should be float, was"):
-        train_integration(dataset, model, optimizer, sinkhorn_loss, delta="wrong")  # type: ignore
-    with pytest.raises(ValueError, match="Parameter `delta` cannot be negative."):
-        train_integration(dataset, model, optimizer, sinkhorn_loss, delta=-0.1)
-    with pytest.raises(
-        ValueError, match="Parameter `mode` must be one of \\['min', 'max'\\]."
-    ):
         train_integration(
             dataset,
             model,
             optimizer,
             sinkhorn_loss,
-            optimization_mode="loss",  # type: ignore
+            key=sub_key,
+            patience=0.2,  # type: ignore
+        )
+    with pytest.raises(
+        ValueError, match="Parameter `patience` must be strictly positive."
+    ):
+        train_integration(
+            dataset, model, optimizer, sinkhorn_loss, key=sub_key, patience=-7
+        )
+    with pytest.raises(TypeError, match="Parameter `delta` should be float, was"):
+        train_integration(
+            dataset,
+            model,
+            optimizer,
+            sinkhorn_loss,
+            key=sub_key,
+            delta="wrong",  # type: ignore
+        )
+    with pytest.raises(ValueError, match="Parameter `delta` cannot be negative."):
+        train_integration(
+            dataset, model, optimizer, sinkhorn_loss, key=sub_key, delta=-0.1
         )
 
     # Wrong regularization
@@ -552,7 +395,14 @@ def test_training_exceptions():
         ValueError,
         match="Invalid regularization option. Must be one of \\['l1', 'l2'\\]",
     ):
-        train_integration(dataset, model, optimizer, sinkhorn_loss, regularization="l3")  # type: ignore
+        train_integration(
+            dataset,
+            model,
+            optimizer,
+            sinkhorn_loss,
+            key=sub_key,
+            regularization="l3",  # type: ignore
+        )
     with pytest.raises(
         TypeError, match="Parameter `regularization_strength` must be of type float."
     ):
@@ -561,6 +411,7 @@ def test_training_exceptions():
             model,
             optimizer,
             sinkhorn_loss,
+            key=sub_key,
             regularization="l1",
             regularization_strength="1",  # type: ignore
         )
@@ -572,6 +423,7 @@ def test_training_exceptions():
             model,
             optimizer,
             sinkhorn_loss,
+            key=sub_key,
             regularization="l1",
             regularization_strength=-0.1,
         )
@@ -583,6 +435,7 @@ def test_training_exceptions():
             model,
             optimizer,
             sinkhorn_loss,
+            key=sub_key,
             regularization="l1",
             pruning_frequency=0.5,  # type: ignore
         )
@@ -594,6 +447,7 @@ def test_training_exceptions():
             model,
             optimizer,
             sinkhorn_loss,
+            key=sub_key,
             regularization="l1",
             pruning_frequency=-5,
         )
