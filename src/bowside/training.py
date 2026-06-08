@@ -667,15 +667,12 @@ def train_integration(
 
     log.info(f"Using model of type {model.__class__.__name__}")
 
-    # TODO: Run on GPU
     # Select GPU if available
-    # device = None
-    # if use_accelerator and torch.accelerator.is_available():
-    #     device = torch.accelerator.current_accelerator()
-    # if device is None:
-    #     device = torch.device("cpu")
-    # model = model.to(device)
-    # log.info(f"Running on device '{device}'")
+    device = jax.devices()[0]
+    if str(device.platform) != "cpu" and not use_accelerator:
+        device = jax.devices("cpu")[0]
+        model = jax.device_get(model)
+    log.info(f"Running on device '{device}'")
 
     time_points = None
     if isinstance(dataset, PseudotimeDataset):
@@ -752,9 +749,7 @@ def train_integration(
             train_loss = 0.0
             for data in trainloader:
                 key, sub_key = jax.random.split(key)
-                y = jnp.asarray(
-                    data.numpy().copy()
-                )  # TODO: look up how to use torch dataloader properly
+                y = jnp.asarray(data.numpy().copy(), device=device)
                 loss, model, opt_state = train_step_integration(
                     model=model,
                     y=y,
@@ -775,9 +770,7 @@ def train_integration(
             test_loss = 0.0
             for data in testloader:
                 key, sub_key = jax.random.split(key)
-                y = jnp.asarray(
-                    data.numpy().copy()
-                )  # TODO: look up how to use torch dataloader properly
+                y = jnp.asarray(data.numpy().copy(), device=device)
                 loss = test(
                     model=model,
                     y=y,
