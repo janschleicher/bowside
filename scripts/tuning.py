@@ -4,23 +4,20 @@ from functools import partial
 from multiprocessing import Pool
 from pathlib import Path
 
+import diffrax
+import jax
 import networkx as nx
-import numpy as np
+import optax
 import optuna
 import pandas as pd
 import scanpy as sc
-import torch
+from jax import numpy as jnp
 from optuna.storages import JournalStorage
 from optuna.storages.journal import JournalFileBackend
 
 from bowside.dataset import PseudotimeDataset
 from bowside.model import GRNModelSDE
-from bowside.training import (
-    NaNTensorError,
-    qqloss,
-    sinkhorn_loss,
-    train_integration,
-)
+from bowside.training import mse_loss, qqloss, sinkhorn_loss, train_integration
 
 
 def objective(
@@ -34,7 +31,9 @@ def objective(
     dt: float,
     loss_func: str,
     weighted_loss: bool,
+    key: jax.Array,
 ):
+    key = jax.random.fold_in(key, trial.number)
     # Setup per-trial logger
     checkpoint_dir = out_dir / str(trial.number)
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
@@ -84,65 +83,56 @@ def objective(
     for gene in dataset.gene_names:
         if gene not in grn.nodes():
             grn.add_node(gene)
+
+    # Optimizer setup
+    optimizer_name = trial.suggest_categorical("optimizer", ["Adam", "RMSprop"])
+    lr = trial.suggest_float("lr", 1e-5, 1e-1, log=True)
+    optimizer = getattr(optax, optimizer_name.lower())(learning_rate=lr)
+
+    # Training parameters
+    num_epochs = trial.suggest_int("num_epochs", low=500, high=5000, step=500)
+    solver_method = trial.suggest_categorical("solver_method", ["Euler", "ItoMilstein"])
+
+    key_init, key_train = jax.random.split(key)
     model = GRNModelSDE(
         dataset.n_genes(),
-        adj=torch.from_numpy(
-            nx.to_numpy_array(grn, nodelist=dataset.gene_names).astype(np.float32)
-        ),
+        adj=jnp.asarray(nx.to_numpy_array(grn, nodelist=dataset.gene_names)),
         adj_init_normal=adj_init_normal,
         sigma=sigma,
         shared_sigma=shared_sigma,
         fixed_sigma=fixed_sigma,
         constant_noise=constant_noise,
+        solver=getattr(diffrax, solver_method)(),
+        dt=dt,
+        key=key_init,
     )
-
-    # Optimizer setup
-    optimizer_name = trial.suggest_categorical("optimizer", ["Adam", "RMSprop"])
-    lr = trial.suggest_float("lr", 1e-5, 1e-1, log=True)
-    optimizer = getattr(torch.optim, optimizer_name)(model.parameters(), lr=lr)
-
-    # Training parameters
-    num_epochs = trial.suggest_int("num_epochs", low=500, high=5000, step=500)
-    solver_method = trial.suggest_categorical("solver_method", ["euler", "milstein"])
 
     # Training
     weight = None
     if weighted_loss:
-        weight = torch.sqrt(torch.linspace(0.0, 10.0**2, dataset.time_points.size(0)))
+        weight = jnp.sqrt(jnp.linspace(0.0, 10.0**2, dataset.time_points.size(0)))
     if loss_func == "sinkhorn":
         loss_fn = partial(sinkhorn_loss, weight=weight)
     elif loss_func == "qqloss":
         loss_fn = partial(
             qqloss,
-            metric=torch.nn.functional.mse_loss,
-            dim=1,
+            metric=mse_loss,
+            dim=0,
             n_quantiles=100,
             weight=weight,
         )
 
-    try:
-        _, test_losses = train_integration(
-            dataset,
-            model,
-            optimizer,
-            loss_fn,
-            num_epochs=num_epochs,
-            solver_method=solver_method,
-            dt=dt,
-            atol=1e-9,
-            checkpoint="final",
-            checkpoint_dir=checkpoint_dir,
-            logger=logger,
-        )
-    except NaNTensorError:
-        raise optuna.TrialPruned("Numerical instabilities during SDE integration.")
-    except ValueError as e:
-        if str(e) == "Maximum allowed size exceeded":
-            raise optuna.TrialPruned(
-                "Sinkhorn loss cannot be computed (scaling issues)."
-            )
-        else:
-            raise e
+    _, _, test_losses, _ = train_integration(
+        dataset,
+        model,
+        optimizer,
+        loss_fn,
+        key_train,
+        num_epochs=num_epochs,
+        checkpoint="final",
+        checkpoint_dir=checkpoint_dir,
+        logger=logger,
+    )
 
     logger.info(f"Final test loss: {test_losses[-1]}")
     file_handler.flush()
@@ -263,6 +253,12 @@ if __name__ == "__main__":
         default=1,
         help="Number of parallel processes to run.",
     )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=42,
+        help="Random seed for the initial, study-level JAX PRNG key.",
+    )
     args = parser.parse_args()
 
     # Load and filter adjacency list
@@ -292,6 +288,7 @@ if __name__ == "__main__":
         dt=args.dt,
         loss_func=args.loss_func,
         weighted_loss=args.weighted_loss,
+        key=jax.random.key(args.seed),
     )
 
     # Run study
