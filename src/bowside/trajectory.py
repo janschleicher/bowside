@@ -1,7 +1,7 @@
 """Module for trajectory inference from a trained dynamic GRN model."""
 
 import logging
-from typing import Literal, Union
+from typing import Literal, Optional, Union
 
 import jax
 import numpy as np
@@ -21,6 +21,7 @@ log = logging.getLogger(__name__)
 def infer_trajectories(
     dataset: Union[MarkovChainDataset, PseudotimeDataset],
     model: GRNModel,
+    key: Optional[jax.Array] = None,
     metric: Literal[
         "cityblock", "correlation", "cosine", "euclidean", "sqeuclidean"
     ] = "euclidean",
@@ -41,6 +42,9 @@ def infer_trajectories(
         Dataset to use for simulations (starting cells and time points).
     model : GRNModel
         The trained gene regulatory network model.
+    key : Optional[jax.Array], optional
+        Key for the random number generator. Required for integration
+        with a GRNModelSDE. Default: None.
     metric : Literal["cityblock", "correlation", "cosine", "euclidean", "sqeuclidean"], optional
         Distance metric for clustering of simulations. Default: "euclidean".
     min_clusters : int, optional
@@ -159,7 +163,8 @@ def infer_trajectories(
 
     # Sequences are of shape (n_cells, n_steps, n_genes)
     if isinstance(model, GRNModelSDE):
-        keys = jax.random.split(jax.random.key(42), y0.shape[0])
+        assert key is not None, "For a `GRNModelSDE`, a random key is required."
+        keys = jax.random.split(key, y0.shape[0])
         sequences = np.asarray(jax.vmap(model, in_axes=[None, 0, 0])(ts, y0, keys))
     else:
         sequences = np.asarray(jax.vmap(model, in_axes=[None, 0])(ts, y0))
