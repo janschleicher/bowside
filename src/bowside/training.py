@@ -593,7 +593,7 @@ def train_integration(
         Minimum difference between consecutive loss values to consider
         as an improvement. Default: 0.0.
     use_accelerator : bool, optional
-        Whether to use an accelerator (CUDA or MPS) if it is available.
+        Whether to use an accelerator (e.g., CUDA) if it is available.
         Default: True.
     loss_kwargs : dict, optional
         Additional keyword arguments for the loss function. Default: {}.
@@ -614,8 +614,9 @@ def train_integration(
 
     Returns
     -------
-    Tuple[List[float], List[float]]
-        Train and test losses for every epoch.
+    Tuple[GRNModel, List[float], List[float], optax.OptState]
+        Trained model, train and test losses for every epoch, and final
+        state of the optimizer.
 
     Raises
     ------
