@@ -113,12 +113,10 @@ class GRNModel(eqx.Module):
             self.adj = jnp.abs(self.adj) * adj
 
         else:
-            sparse_mask = jax.random.choice(
-                sparse_key,
-                jnp.asarray([0, 1]),
-                self.adj.shape,
-                p=jnp.asarray([adj_sparsity, 1 - adj_sparsity]),
-            )
+            sparse_mask = (
+                jax.random.uniform(key, self.adj.shape, minval=0.0, maxval=1.0)
+                > adj_sparsity
+            ).astype(int)
             self.adj = self.adj * sparse_mask
             self.adj_init = self.adj.copy()
             self.adj_mask = jnp.ones_like(self.adj)
