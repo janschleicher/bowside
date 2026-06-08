@@ -348,7 +348,7 @@ def integrate_model(
     Returns
     -------
     jax.Array
-        State array of size (n_steps, batch_size, n_var).
+        State array of size (n_simulations, n_steps, n_var).
 
     Raises
     ------
