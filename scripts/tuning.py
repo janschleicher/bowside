@@ -171,6 +171,7 @@ def run_optimization(
     dataset: str,
     loss_func: str,
     weighted_loss: bool,
+    regularization: Optional[Literal["l1", "l2"]],
     n_trials: int,
 ):
     study = optuna.create_study(
@@ -183,6 +184,7 @@ def run_optimization(
     study.set_user_attr("dataset", dataset)
     study.set_user_attr("loss_function", loss_func)
     study.set_user_attr("weighted_loss", str(weighted_loss))
+    study.set_user_attr("regularization", regularization)
     study.optimize(objective_func, n_trials=n_trials)
 
 
@@ -326,6 +328,7 @@ if __name__ == "__main__":
         dt=args.dt,
         loss_func=args.loss_func,
         weighted_loss=args.weighted_loss,
+        regularization=args.regularization,
         seed=args.seed,
     )
 
@@ -340,6 +343,7 @@ if __name__ == "__main__":
                 dataset=args.input,
                 loss_func=args.loss_func,
                 weighted_loss=args.weighted_loss,
+                regularization=args.regularization,
                 n_trials=args.n_trials_per_worker,
             ),
             range(args.n_trials // args.n_trials_per_worker),
