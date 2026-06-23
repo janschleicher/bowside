@@ -1,23 +1,24 @@
 import argparse
 import logging
+import multiprocessing as mp
+import os
 from functools import partial
 from multiprocessing import Pool
 from pathlib import Path
+from typing import Optional
 
-import diffrax
-import jax
 import networkx as nx
-import optax
 import optuna
 import pandas as pd
 import scanpy as sc
-from jax import numpy as jnp
 from optuna.storages import JournalStorage
 from optuna.storages.journal import JournalFileBackend
 
 from bowside.dataset import PseudotimeDataset
 from bowside.model import GRNModelSDE
 from bowside.training import mse_loss, qqloss, sinkhorn_loss, train_integration
+
+os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
 
 
 def objective(
@@ -27,13 +28,18 @@ def objective(
     layer: str,
     mask_var: str,
     pseudotime_key: str,
-    adj_list: pd.DataFrame,
+    adj_list: Optional[pd.DataFrame],
     dt: float,
     loss_func: str,
     weighted_loss: bool,
-    key: jax.Array,
+    seed: int,
 ):
-    key = jax.random.fold_in(key, trial.number)
+    import diffrax
+    import jax
+    import optax
+    from jax import numpy as jnp
+
+    key = jax.random.fold_in(jax.random.key(seed), trial.number)
     # Setup per-trial logger
     checkpoint_dir = out_dir / str(trial.number)
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
@@ -73,16 +79,19 @@ def objective(
         raise optuna.TrialPruned("Cannot use fixed, gene-wise sigma.")
 
     # Model setup
-    adj_list = adj_list[
-        (adj_list.source.isin(dataset.gene_names))
-        & (adj_list.target.isin(dataset.gene_names))
-    ]
-    grn = nx.from_pandas_edgelist(
-        adj_list, source="source", target="target", create_using=nx.DiGraph
-    )
-    for gene in dataset.gene_names:
-        if gene not in grn.nodes():
-            grn.add_node(gene)
+    adj = None
+    if adj_list is not None:
+        adj_list = adj_list[
+            (adj_list.source.isin(dataset.gene_names))
+            & (adj_list.target.isin(dataset.gene_names))
+        ]
+        grn = nx.from_pandas_edgelist(
+            adj_list, source="source", target="target", create_using=nx.DiGraph
+        )
+        for gene in dataset.gene_names:
+            if gene not in grn.nodes():
+                grn.add_node(gene)
+        adj = jnp.asarray(nx.to_numpy_array(grn, nodelist=dataset.gene_names))
 
     # Optimizer setup
     optimizer_name = trial.suggest_categorical("optimizer", ["Adam", "RMSprop"])
@@ -96,7 +105,7 @@ def objective(
     key_init, key_train = jax.random.split(key)
     model = GRNModelSDE(
         dataset.n_genes(),
-        adj=jnp.asarray(nx.to_numpy_array(grn, nodelist=dataset.gene_names)),
+        adj=adj,
         adj_init_normal=adj_init_normal,
         sigma=sigma,
         shared_sigma=shared_sigma,
@@ -190,6 +199,8 @@ if __name__ == "__main__":
         "--adj-file",
         type=str,
         help="CSV file containg the adjacency list for initialization.",
+        required=False,
+        default=None,
     )
     parser.add_argument(
         "--adj-source-col",
@@ -261,17 +272,23 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
 
+    mp.set_start_method("spawn", force=True)
+
     # Load and filter adjacency list
-    adj_list = pd.read_csv(args.adj_file)
-    if args.adj_filter_col is not None:
-        if args.adj_filter_value is None:
-            adj_list = adj_list[adj_list[args.adj_filter_col]]  # Assume boolean
-        else:
-            adj_list = adj_list[adj_list[args.adj_filter_col] == args.adj_filter_value]
-    adj_list = adj_list.rename(
-        columns={args.adj_source_col: "source", args.adj_target_col: "target"}
-    )
-    adj_list = adj_list[["source", "target"]]
+    adj_list = None
+    if args.adj_file is not None:
+        adj_list = pd.read_csv(args.adj_file)
+        if args.adj_filter_col is not None:
+            if args.adj_filter_value is None:
+                adj_list = adj_list[adj_list[args.adj_filter_col]]  # Assume boolean
+            else:
+                adj_list = adj_list[
+                    adj_list[args.adj_filter_col] == args.adj_filter_value
+                ]
+        adj_list = adj_list.rename(
+            columns={args.adj_source_col: "source", args.adj_target_col: "target"}
+        )
+        adj_list = adj_list[["source", "target"]]
 
     out_dir = Path(args.output)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -288,7 +305,7 @@ if __name__ == "__main__":
         dt=args.dt,
         loss_func=args.loss_func,
         weighted_loss=args.weighted_loss,
-        key=jax.random.key(args.seed),
+        seed=args.seed,
     )
 
     # Run study
