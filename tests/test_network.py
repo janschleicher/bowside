@@ -94,7 +94,7 @@ def test_get_network_exceptions():
         _get_network(TEST_MODEL, graph)
 
 
-@pytest.mark.parametrize("dataset", [None, BifurcatingPseudotimeDataset(Y0)])
+@pytest.mark.parametrize("use_dataset", [False, True])
 @pytest.mark.parametrize(
     "measures",
     [
@@ -104,10 +104,12 @@ def test_get_network_exceptions():
         ["closeness", "betweenness", "edge_betweenness"],
     ],
 )
-def test_compute_centrality(dataset: Optional[BifurcatingPseudotimeDataset], measures):
-    if dataset is not None:
+def test_compute_centrality(use_dataset: bool, measures):
+    if use_dataset:
+        dataset = BifurcatingPseudotimeDataset(Y0)
         model = dataset.sde
     else:
+        dataset = None
         model = TEST_MODEL
     compute_centrality(model, dataset, measures)
 
