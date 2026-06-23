@@ -5,7 +5,7 @@ import os
 from functools import partial
 from multiprocessing import Pool
 from pathlib import Path
-from typing import Optional
+from typing import Literal, Optional
 
 import networkx as nx
 import optuna
@@ -32,6 +32,7 @@ def objective(
     dt: float,
     loss_func: str,
     weighted_loss: bool,
+    regularization: Optional[Literal["l1", "l2"]],
     seed: int,
 ):
     import diffrax
@@ -116,6 +117,16 @@ def objective(
         key=key_init,
     )
 
+    # Regularization
+    if regularization is not None:
+        regularization_strength = trial.suggest_float(
+            "regularization_strength", 1e-6, 1e-2, log=True
+        )
+    else:
+        regularization_strength = (
+            0.0001  # not used, but necessary for calling the function
+        )
+
     # Training
     weight = None
     if weighted_loss:
@@ -137,6 +148,8 @@ def objective(
         optimizer,
         loss_fn,
         key_train,
+        regularization=regularization,
+        regularization_strength=regularization_strength,
         num_epochs=num_epochs,
         checkpoint="final",
         checkpoint_dir=checkpoint_dir,
@@ -248,6 +261,14 @@ if __name__ == "__main__":
         action="store_true",
         help="Use a weighted average for the loss function, increasing "
         "the importance of later time points.",
+    )
+    parser.add_argument(
+        "--regularization",
+        type=str,
+        choices=["l1", "l2"],
+        required=False,
+        default=None,
+        help="Regularization of adjacency matrix weights.",
     )
     parser.add_argument(
         "--n-trials", type=int, default=100, help="Number of trials for optuna tuning."
