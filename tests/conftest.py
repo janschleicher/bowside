@@ -32,3 +32,12 @@ def setup_adata():
         scv.tl.velocity(ADATA)
         scv.tl.velocity_graph(ADATA)
         ADATA.write_h5ad(TEST_DATA_PATH)
+
+
+@pytest.fixture(scope="session", autouse=True)
+def make_tmp_dir():
+    TMPDIR = Path(os.path.dirname(os.path.realpath(__file__))) / "tmp"
+    os.environ["TMPDIR"] = str(TMPDIR)
+    TMPDIR.mkdir(parents=True, exist_ok=True)
+    yield
+    os.removedirs(TMPDIR)
