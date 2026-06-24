@@ -5,6 +5,8 @@ import pytest
 import scanpy as sc
 import scvelo as scv
 
+os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
+
 TEST_DATA_PATH = (
     Path(os.path.dirname(os.path.realpath(__file__))) / "test_data/adata_velocity.h5ad"
 )
