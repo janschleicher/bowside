@@ -3,8 +3,9 @@
 import logging
 from typing import Literal, Optional, Union
 
+import jax
 import numpy as np
-import torch
+from jax import numpy as jnp
 from scipy.cluster.hierarchy import fcluster, linkage
 from scipy.spatial.distance import pdist, squareform
 from scipy.stats import entropy
@@ -12,8 +13,7 @@ from sklearn.metrics import silhouette_score
 
 from bowside.dataset import MarkovChainDataset, PseudotimeDataset
 from bowside.mixture import GaussianMixtureTimeseries
-from bowside.model import GRNModel
-from bowside.training import integrate_model
+from bowside.model import GRNModel, GRNModelSDE
 
 log = logging.getLogger(__name__)
 
@@ -21,6 +21,7 @@ log = logging.getLogger(__name__)
 def infer_trajectories(
     dataset: Union[MarkovChainDataset, PseudotimeDataset],
     model: GRNModel,
+    key: Optional[jax.Array] = None,
     metric: Literal[
         "cityblock", "correlation", "cosine", "euclidean", "sqeuclidean"
     ] = "euclidean",
@@ -30,10 +31,6 @@ def infer_trajectories(
         "single", "complete", "average", "weighted", "centroid", "median", "ward"
     ] = "ward",
     trajectory_mode: Literal["mean", "median"] = "mean",
-    solver_method: Optional[str] = None,
-    dt: float = 0.001,
-    atol: float = 1e-4,
-    rtol: float = 1e-5,
 ):
     """
     Infer average gene expression trajectories from differential equation
@@ -45,6 +42,9 @@ def infer_trajectories(
         Dataset to use for simulations (starting cells and time points).
     model : GRNModel
         The trained gene regulatory network model.
+    key : Optional[jax.Array], optional
+        Key for the random number generator. Required for integration
+        with a GRNModelSDE. Default: None.
     metric : Literal["cityblock", "correlation", "cosine", "euclidean", "sqeuclidean"], optional
         Distance metric for clustering of simulations. Default: "euclidean".
     min_clusters : int, optional
@@ -76,7 +76,7 @@ def infer_trajectories(
     Returns `None`. Sets the following fields in `dataset.adata.uns`:
 
     `adata.uns["bowside"]["simulations"]` : :class:`numpy.ndarray`
-        Array of shape (n_steps, n_simulations, n_var) containing gene
+        Array of shape (n_simulations, n_steps, n_var) containing gene
         expression simulations from the trained model.
     `adata.uns["bowside"]["num_trajectories"]` : int
         Number of inferred trajectories. If `min_clusters < max_clusters`,
@@ -116,7 +116,7 @@ def infer_trajectories(
 
     # Data setup
     y = dataset[:]
-    y0 = y[:, 0, :]
+    y0 = jnp.asarray(y[:, 0, :].detach().numpy())
 
     if isinstance(dataset, PseudotimeDataset):
         time_points = dataset.time_points
@@ -156,24 +156,18 @@ def infer_trajectories(
         )
 
     # Simulate sequences with differential equation model
-    model.eval()
-    with torch.no_grad():
-        sequences = (
-            integrate_model(
-                y0,
-                model,
-                n_steps=n_steps,
-                time_points=time_points,
-                adjoint=False,
-                solver_method=solver_method,
-                dt=dt,
-                atol=atol,
-                rtol=rtol,
-            )
-            .detach()
-            .cpu()
-            .numpy()
-        )
+    if time_points is not None:
+        ts = jnp.asarray(time_points.detach().cpu().numpy())
+    elif n_steps is not None:
+        ts = jnp.linspace(0, n_steps - 1, n_steps)
+
+    # Sequences are of shape (n_cells, n_steps, n_genes)
+    if isinstance(model, GRNModelSDE):
+        assert key is not None, "For a `GRNModelSDE`, a random key is required."
+        keys = jax.random.split(key, y0.shape[0])
+        sequences = np.asarray(jax.vmap(model, in_axes=[None, 0, 0])(ts, y0, keys))
+    else:
+        sequences = np.asarray(jax.vmap(model, in_axes=[None, 0])(ts, y0))
 
     adata = dataset.adata
     if "bowside" not in adata.uns:
@@ -183,7 +177,7 @@ def infer_trajectories(
     # Hierarchical clustering
     if not skip_clustering:
         distances = pdist(
-            np.moveaxis(sequences, 1, 0).reshape(sequences.shape[1], -1),
+            sequences.reshape(sequences.shape[0], -1),
             metric=metric,
         )
         distances_square = squareform(distances)
@@ -207,17 +201,17 @@ def infer_trajectories(
         adata.uns["bowside"]["trajectory_inference_clusters"] = labels
     else:
         num_trajectories = 1
-        labels = np.ones(sequences.shape[1], dtype=int)
+        labels = np.ones(sequences.shape[0], dtype=int)
         adata.uns["bowside"]["num_trajectories"] = num_trajectories
 
     # Computing average expression trajectories
-    trajectories = np.zeros((num_trajectories, sequences.shape[0], sequences.shape[2]))
+    trajectories = np.zeros((num_trajectories, sequences.shape[1], sequences.shape[2]))
     for i, cluster in enumerate(np.unique(labels, sorted=True)):
-        cluster_sequences = sequences[:, labels == cluster, :]
+        cluster_sequences = sequences[labels == cluster, :, :]
         if trajectory_mode == "mean":
-            trajectories[i] = cluster_sequences.mean(axis=1)
+            trajectories[i] = cluster_sequences.mean(axis=0)
         elif trajectory_mode == "median":
-            trajectories[i] = np.median(cluster_sequences, axis=1)
+            trajectories[i] = np.median(cluster_sequences, axis=0)
     adata.uns["bowside"]["trajectories"] = trajectories
 
 

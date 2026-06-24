@@ -1,14 +1,15 @@
 """Module for sensitivity analysis on a trained dynamic GRN model."""
 
-from copy import deepcopy
 from typing import Optional, Tuple, Union
 
+import equinox as eqx
+import jax
 import numpy as np
 import pandas as pd
-import torch
+from jax import numpy as jnp
 
 from bowside.dataset import MarkovChainDataset, PseudotimeDataset
-from bowside.model import GRNModel
+from bowside.model import GRNModel, GRNModelSDE
 from bowside.training import LossFunction, integrate_model
 
 
@@ -17,12 +18,9 @@ def simulate_knockout(
     model: GRNModel,
     gene: Union[str, int],
     loss_func: LossFunction,
-    solver_method: Optional[str] = None,
-    dt: float = 0.001,
-    atol: float = 1e-4,
-    rtol: float = 1e-5,
+    key: Optional[jax.Array] = None,
     loss_kwargs: dict = {},
-) -> Tuple[torch.Tensor, torch.Tensor, float]:
+) -> Tuple[jax.Array, jax.Array, float]:
     """
     Simulate gene expression sequences with a single gene knockout by
     setting the weights of all edges outgoing from the respective node
@@ -38,6 +36,9 @@ def simulate_knockout(
         The gene to knock out. Either an integer index or the gene name.
     loss_func : LossFunction
         Loss function to use for quantifying the effect of the knockout.
+    key : Optional[jax.Array], optional
+        Key for the random number generator. Required for integration
+        with a GRNModelSDE. Default: None.
     solver_method : Optional[str], optional
         Numerical solver to use. With the default None, a suitable method
         is chosen depending on the model type.
@@ -52,7 +53,7 @@ def simulate_knockout(
 
     Returns
     -------
-    Tuple[torch.Tensor, torch.Tensor, float]
+    Tuple[jax.Array, jax.Array, float]
         Simulations for the wildtype and knockout model, and loss
         function value between knockout and wild type simulations as a
         measure of the global effect of the knockout of this gene.
@@ -60,10 +61,10 @@ def simulate_knockout(
     Also sets the following fields in `dataset.adata.uns`:
 
     `adata.uns["bowside"]["simulations"]` : :class:`numpy.ndarray`
-        Array of shape (n_steps, n_simulations, n_var) containing gene
+        Array of shape (n_simulations, n_steps, n_var) containing gene
         expression simulations from the trained model.
     `adata.uns["bowside"]["simulations_ko_{gene}"]` : :class:`numpy.ndarray`
-        Array of shape (n_steps, n_simulations, n_var) containing gene
+        Array of shape (n_simulations, n_steps, n_var) containing gene
         expression simulations from the trained model, with a knockout
         of `gene`.
 
@@ -81,16 +82,21 @@ def simulate_knockout(
         An error is raised if `gene` is of type i
         nt and is out of bounds.
     """
+    device = model.adj.device
     time_points = None
-    n_steps = None
-    if not isinstance(dataset, (PseudotimeDataset, MarkovChainDataset)):
+    if isinstance(dataset, PseudotimeDataset):
+        time_points = jnp.asarray(dataset.time_points.numpy().copy(), device=device)
+    elif isinstance(dataset, MarkovChainDataset):
+        n_steps = dataset.markov_chains.shape[1]
+        time_points = jnp.linspace(0, n_steps - 1, n_steps, device=device)
+    else:
         raise TypeError(
             f"Invalid dataset type: {type(dataset)}. Must be one of "
             f"[MarkovChainDataset, PseudotimeDataset]."
         )
 
     # Data setup
-    y = dataset[:]
+    y = jnp.asarray(dataset[:].numpy().copy(), device=device)
     y0 = y[:, 0, :]
 
     # Check parameters
@@ -98,11 +104,6 @@ def simulate_knockout(
         raise ValueError(
             f"Incompatible number of genes. Dataset: {dataset.n_genes()}, model: {model.n_genes()}"
         )
-
-    if isinstance(dataset, PseudotimeDataset):
-        time_points = dataset.time_points
-    elif isinstance(dataset, MarkovChainDataset):
-        n_steps = y.shape[1]
 
     # Find the gene for the KO
     if isinstance(gene, str):
@@ -123,59 +124,44 @@ def simulate_knockout(
     assert isinstance(gene_idx, int)
 
     # Remove all outgoing edges from the knockout gene
-    model_ko = deepcopy(model)
-    model_ko.eval()
-    model.eval()
-    with torch.no_grad():
-        model_ko.adj_mask[gene_idx, :].copy_(torch.zeros(dataset.n_genes()))
+    adj_mask = model.adj_mask.at[gene_idx, :].set(0)
+    model_ko = eqx.tree_at(lambda m: m.adj_mask, model, adj_mask)
 
     # Get wildtype simulations
     if "bowside" not in dataset.adata.uns:
         dataset.adata.uns["bowside"] = {}
     if "simulations" in dataset.adata.uns["bowside"]:
-        sequences_wt = torch.from_numpy(dataset.adata.uns["bowside"]["simulations"])
+        sequences_wt = jnp.asarray(dataset.adata.uns["bowside"]["simulations"])
     else:
-        sequences_wt = integrate_model(
-            y0,
-            model,
-            n_steps=n_steps,
-            time_points=time_points,
-            solver_method=solver_method,
-            dt=dt,
-            atol=atol,
-            rtol=rtol,
-        )
-        dataset.adata.uns["bowside"]["simulations"] = (
-            sequences_wt.detach().cpu().numpy()
-        )
+        if isinstance(model, GRNModelSDE):
+            assert key is not None, "For a `GRNModelSDE`, a random key is required."
+            key, sub_key = jax.random.split(key)
+        else:
+            sub_key = None
+        sequences_wt = integrate_model(model, y0, time_points, key=sub_key)
+        dataset.adata.uns["bowside"]["simulations"] = np.asarray(sequences_wt)
 
     # Perform knockout simulations
-    y0_ko = y0.clone()
-    y0_ko[gene_idx] = 0
-    sequences_ko = integrate_model(
-        y0_ko,
-        model_ko,
-        n_steps=n_steps,
-        time_points=time_points,
-        solver_method=solver_method,
-        dt=dt,
-        atol=atol,
-        rtol=rtol,
-    )
+    if isinstance(model, GRNModelSDE):
+        assert key is not None, "For a `GRNModelSDE`, a random key is required."
+        key, sub_key = jax.random.split(key)
+    else:
+        sub_key = None
+    y0_ko = y0.at[gene_idx].set(0)
+    sequences_ko = integrate_model(model_ko, y0_ko, time_points, sub_key)
 
     # Set knockout gene expression to 0
-    with torch.no_grad():
-        sequences_ko[:, :, gene_idx] = 0
+    sequences_ko = sequences_ko.at[:, :, gene_idx].set(0)
 
     dataset.adata.uns["bowside"][f"simulations_ko_{dataset.gene_names[gene_idx]}"] = (
-        sequences_ko.detach().cpu().numpy()
+        jnp.asarray(sequences_ko)
     )
 
     # Compute difference between wildtype and knockout, excluding the knockout gene
-    gene_selection = torch.arange(dataset.n_genes()) != gene_idx
+    gene_selection = jnp.arange(dataset.n_genes()) != gene_idx
     diff = loss_func(
-        sequences_ko[:, :, gene_selection].contiguous(),
-        sequences_wt[:, :, gene_selection].contiguous(),
+        sequences_ko[:, :, gene_selection],
+        sequences_wt[:, :, gene_selection],
         **loss_kwargs,
     ).item()
 
@@ -186,10 +172,7 @@ def simulate_all_knockouts(
     dataset: Union[MarkovChainDataset, PseudotimeDataset],
     model: GRNModel,
     loss_func: LossFunction,
-    solver_method: Optional[str] = None,
-    dt: float = 0.001,
-    atol: float = 1e-4,
-    rtol: float = 1e-5,
+    key: Optional[jax.Array],
     loss_kwargs: dict = {},
 ) -> Tuple[pd.Series, pd.DataFrame]:
     """
@@ -206,15 +189,9 @@ def simulate_all_knockouts(
         The trained gene regulatory network model.
     loss_func : LossFunction
         Loss function to use for quantifying the effect of the knockout.
-    solver_method : Optional[str], optional
-        Numerical solver to use. With the default None, a suitable method
-        is chosen depending on the model type.
-    dt : float, optional
-        The step size for the solver. Only used for SDEs. Default: 0.001.
-    atol : float, optional
-        Absolute tolerance. Default: 1e-4.
-    rtol : float, optional
-        Relative tolerance. Default: 1e-5.
+    key : Optional[jax.Array], optional
+        Key for the random number generator. Required for integration
+        with a GRNModelSDE. Default: None.
     loss_kwargs : dict, optional
         Additional keyword arguments for the loss function. Default: {}.
 
@@ -226,10 +203,10 @@ def simulate_all_knockouts(
     Also sets the following fields in `dataset.adata.uns`:
 
     `adata.uns["bowside"]["simulations"]` : :class:`numpy.ndarray`
-        Array of shape (n_steps, n_simulations, n_var) containing gene
+        Array of shape (n_simulations, n_steps, n_var) containing gene
         expression simulations from the trained model.
     `adata.uns["bowside"]["simulations_ko_{gene}"]` : :class:`numpy.ndarray`
-        Array of shape (n_steps, n_simulations, n_var) containing gene
+        Array of shape (n_simulations, n_steps, n_var) containing gene
         expression simulations from the trained model for single-gene
         knockouts of all genes in `dataset`.
     `adata.uns["bowside"]["sensitivity"]["global_knockout_effects"] : :class:`pandas.Series`
@@ -246,16 +223,18 @@ def simulate_all_knockouts(
     effects = np.zeros((dataset.n_genes(), dataset.n_genes()))
 
     # Simulate knockouts for all genes in the dataset
+    if isinstance(model, GRNModelSDE):
+        assert key is not None, "For a `GRNModelSDE`, a random key is required."
+        keys = jax.random.split(key, dataset.n_genes())
+    else:
+        keys = [None] * dataset.n_genes()
     for i in range(dataset.n_genes()):
         sequences_wt, sequences_ko, diff = simulate_knockout(
             dataset,
             model,
             i,
             loss_func,
-            solver_method=solver_method,
-            dt=dt,
-            atol=atol,
-            rtol=rtol,
+            key=keys[i],
             loss_kwargs=loss_kwargs,
         )
         gene = dataset.gene_names[i]
@@ -267,8 +246,8 @@ def simulate_all_knockouts(
                 effects[i, j] = np.nan
                 continue
             effects[i, j] = loss_func(
-                sequences_ko[:, :, j].unsqueeze(2),
-                sequences_wt[:, :, j].unsqueeze(2),
+                jnp.expand_dims(sequences_ko[:, :, j], 2),
+                jnp.expand_dims(sequences_wt[:, :, j], 2),
                 **loss_kwargs,
             ).item()
 

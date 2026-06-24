@@ -1,11 +1,22 @@
 """Module for dynamic gene regulatory network model."""
 
-from typing import Literal, Optional
+import json
+from pathlib import Path
+from typing import Callable, Literal, Optional, Union
 
-import torch
+try:
+    from typing import Self
+except ImportError:
+    from typing_extensions import Self
+
+import diffrax
+import equinox as eqx
+import jax
+import lineax as lx
+from jax import numpy as jnp
 
 
-class GRNModel(torch.nn.Module):
+class GRNModel(eqx.Module):
     """
     Gene regulatory network ordinary differential equation model.
 
@@ -13,7 +24,7 @@ class GRNModel(torch.nn.Module):
     ----------
     n_genes : int
         Number of genes.
-    adj : Optional[torch.Tensor], optional
+    adj : Optional[jax.Array], optional
         Adjacency matrix initialization. Only the values -1 (inhibition),
         0 (no regulation), and 1 (activation) are allowed. The value of
         adj[i, j] determines if there is an edge from gene i to gene j.
@@ -26,77 +37,139 @@ class GRNModel(torch.nn.Module):
         not provided. Default: 0.9.
     activation : Literal["sigmoid", "identity", "softplus", "relu"], optional
         Activation function for the production rates. Default: "sigmoid".
+    solver : diffrax.AbstractSolver, optional
+        Differential equation solver. Default: diffrax.Tsit5().
+    solver_atol : float, optional
+        Absolute error tolerance for adaptive solvers. Default: 1e-4.
+    solver_rtol : float, optional
+        Relative error tolerance for adaptive solvers. Default: 1e-5.
+    dt : float, optional
+        The step size for the solver. If an adaptive solver is used,
+        this is the initial step size. Default: 0.01
+    key : jax.Array
+        Key for the random number generator.
     """
+
+    adj: jax.Array
+    adj_mask: jax.Array
+    adj_init: jax.Array
+    log_bias: jax.Array
+    log_decay_rate: jax.Array
+    log_scale: jax.Array
+    activation: Callable[[jax.Array], jax.Array]
+    solver: diffrax.AbstractSolver
+    dt: float
+    step_size_controller: diffrax.AbstractStepSizeController
+    hyperparams: dict
 
     def __init__(
         self,
         n_genes: int,
-        adj: Optional[torch.Tensor] = None,
+        adj: Optional[jax.Array] = None,
         adj_init_normal: bool = False,
         adj_sparsity: float = 0.9,
         activation: Literal["sigmoid", "identity", "softplus", "relu"] = "sigmoid",
+        solver: diffrax.AbstractSolver = diffrax.Tsit5(),
+        solver_atol: float = 1e-4,
+        solver_rtol: float = 1e-5,
+        dt: float = 0.01,
+        *,
+        key: jax.Array,
+        **kwargs,
     ):
-        super().__init__()
+        super().__init__(**kwargs)
+
+        # Hyperparameters to facilitate model saving and loading
+        self.hyperparams = {
+            "n_genes": n_genes,
+            "activation": activation,
+            "solver_name": solver.__class__.__name__,
+            "solver_atol": solver_atol,
+            "solver_rtol": solver_rtol,
+            "dt": dt,
+        }
+
+        adj_key, sparse_key, bias_key, decay_key = jax.random.split(key, 4)
 
         # Initialize adjacency matrix; adj[i, j] is the edge from gene i to gene j
-        self.adj = torch.ones(n_genes, n_genes)
+        self.adj = jnp.ones((n_genes, n_genes))
         if adj_init_normal:
-            torch.nn.init.normal_(self.adj, mean=0, std=1)
+            initializer = jax.nn.initializers.normal(stddev=1.0)
+            self.adj = initializer(adj_key, self.adj.shape)
         if adj is not None:
-            self.adj_init = torch.empty(n_genes, n_genes).copy_(adj)
-            self.adj_init = torch.nn.Parameter(self.adj_init, requires_grad=False)
             assert adj.shape == (n_genes, n_genes), (
                 "Adjacency matrix must be of shape (n_genes, n_genes)."
             )
-            assert torch.isin(adj, torch.tensor([-1, 0, 1])).all(), (
+            assert jnp.isin(adj, jnp.asarray([-1, 0, 1])).all(), (
                 "Adjacency matrix for initialization may only contain values -1, 0, and 1."
             )
 
+            self.adj_init = adj.copy()
+
             # Mask to restrict it to only those edges that are in the prior
-            self.adj_mask = (adj != 0).int()
+            self.adj_mask = (adj != 0).astype(int)
 
             # Ensure that adj has same signs as adj_init
-            self.adj = self.adj.abs() * adj
+            self.adj = jnp.abs(self.adj) * adj
 
         else:
-            sparse_mask = torch.empty_like(self.adj)
-            torch.nn.init.sparse_(
-                sparse_mask, sparsity=adj_sparsity, std=1
-            )  # TODO: find right sparsity level
-            self.adj = self.adj * (sparse_mask != 0)
-            self.adj_mask = torch.ones_like(self.adj)
-        self.adj = torch.nn.Parameter(self.adj)
-        self.adj_mask = torch.nn.Parameter(self.adj_mask, requires_grad=False)
+            sparse_mask = (
+                jax.random.uniform(key, self.adj.shape, minval=0.0, maxval=1.0)
+                > adj_sparsity
+            ).astype(int)
+            self.adj = self.adj * sparse_mask
+            self.adj_init = self.adj.copy()
+            self.adj_mask = jnp.ones_like(self.adj)
 
-        # Use log of bias and decay rates to ensure positivity
-        # TODO: consider using parametrization instead
-        # (https://docs.pytorch.org/tutorials/intermediate/parametrizations.html)
-        self.log_bias = torch.empty(n_genes)
-        torch.nn.init.normal_(self.log_bias, mean=0, std=0.01)
-        self.log_bias = torch.nn.Parameter(self.log_bias)
-        self.log_decay_rate = torch.empty(n_genes)
-        torch.nn.init.normal_(self.log_decay_rate, mean=0, std=0.01)
-        self.log_decay_rate = torch.nn.Parameter(self.log_decay_rate)
-        self.log_scale = torch.nn.Parameter(torch.zeros(n_genes))
+        # Use log of bias, decay rates, and scale to ensure positivity
+        initializer = jax.nn.initializers.normal(stddev=0.01)
+        self.log_bias = initializer(bias_key, (n_genes,))
+        self.log_decay_rate = initializer(decay_key, (n_genes,))
+        self.log_scale = jnp.zeros(n_genes)
 
         match activation:
             case "sigmoid":
-                self.activation = torch.nn.Sigmoid()
+                self.activation = jax.nn.sigmoid
             case "identity":
-                self.activation = torch.nn.Identity()
+                self.activation = jax.nn.identity
             case "softplus":
-                self.activation = torch.nn.Softplus()
+                self.activation = jax.nn.softplus
             case "relu":
-                self.activation = torch.nn.ReLU()
+                self.activation = jax.nn.relu
 
-    def forward(self, t, x):
+        self.solver = solver
+        self.dt = dt
+        if isinstance(solver, diffrax.AbstractAdaptiveSolver):
+            self.step_size_controller = diffrax.PIDController(
+                rtol=solver_rtol, atol=solver_atol
+            )
+        else:
+            self.step_size_controller = diffrax.ConstantStepSize()
+
+    def drift(self, t, y, args):
         return (
-            self.log_scale.exp()
-            * self.activation(x @ (self.adj * self.adj_mask) + self.log_bias.exp())
-            - self.log_decay_rate.exp() * x
+            jnp.exp(self.log_scale)
+            * self.activation(
+                y @ (self.adj * jax.lax.stop_gradient(self.adj_mask))
+                + jnp.exp(self.log_bias)
+            )
+            - jnp.exp(self.log_decay_rate) * y
         )
 
-    def prune(self, atol: float = 1e-3, rtol: float = 1e-3):
+    def __call__(self, ts, y0):
+        solution = diffrax.diffeqsolve(
+            diffrax.ODETerm(self.drift),
+            self.solver,
+            t0=ts[0],
+            t1=ts[-1],
+            dt0=self.dt,
+            y0=y0,
+            stepsize_controller=self.step_size_controller,
+            saveat=diffrax.SaveAt(ts=ts),
+        )
+        return solution.ys
+
+    def prune(self, atol: float = 1e-3, rtol: float = 1e-3) -> Self:
         """
         Prune edges with a weight close to 0.
 
@@ -107,24 +180,31 @@ class GRNModel(torch.nn.Module):
         rtol : float, optional
             Relative threshold for pruning edges close to 0. Default: 1e-3.
         """
-        with torch.no_grad():
-            self.adj_mask.copy_(
-                self.adj_mask
-                * ~torch.isclose(
-                    self.adj,
-                    torch.tensor(
-                        0,
-                        dtype=self.adj.dtype,
-                        device=self.adj_mask.device,
-                    ),
-                    rtol=rtol,
-                    atol=atol,
-                )
-            )
-            self.adj.copy_(self.adj * self.adj_mask)
+        adj_mask = self.adj_mask * ~jnp.isclose(self.adj, 0, rtol=rtol, atol=atol)
+        model = eqx.tree_at(lambda m: m.adj_mask, self, adj_mask)
+        adj = model.adj * model.adj_mask
+        return eqx.tree_at(lambda m: m.adj, model, adj)
 
     def n_genes(self) -> int:
-        return self.adj.size(0)
+        return self.adj.shape[0]
+
+    def save(self, filename: Union[str, Path]):
+        with open(filename, "wb") as f:
+            hyperparam_str = json.dumps(self.hyperparams)
+            f.write((hyperparam_str + "\n").encode())
+            eqx.tree_serialise_leaves(f, self)
+
+    @classmethod
+    def load(cls, filename: Union[str, Path]) -> Self:
+        with open(filename, "rb") as f:
+            hyperparams = json.loads(f.readline().decode())
+            solver_name = hyperparams.pop("solver_name")
+            model = cls(
+                **hyperparams,
+                solver=getattr(diffrax, solver_name)(),
+                key=jax.random.key(0),
+            )
+            return eqx.tree_deserialise_leaves(f, model)
 
 
 class GRNModelSDE(GRNModel):
@@ -148,9 +228,6 @@ class GRNModelSDE(GRNModel):
         not provided. Default: 0.9.
     activation : Literal["sigmoid", "identity", "softplus", "relu"], optional
         Activation function for the production rates. Default: "sigmoid".
-    sde_type : Literal["ito", "stratonovich"], optional
-        Type of the SDE, depending on the underlying type of integral.
-        Default: "ito".
     sigma : float, optional
         Level of the (diagonal) noise. Default: 0.1.
     shared_sigma : bool, opional
@@ -162,20 +239,41 @@ class GRNModelSDE(GRNModel):
     constant_noise : bool, optional
         Whether the noise should be constant (sigma). The alternative is
         to multiply sigma with the expression level. Default: True.
+    solver : diffrax.AbstractSolver, optional
+        Differential equation solver. Default: diffrax.ItoMilstein().
+    solver_atol : float, optional
+        Absolute error tolerance for adaptive solvers. Default: 1e-4.
+    solver_rtol : float, optional
+        Relative error tolerance for adaptive solvers. Default: 1e-5.
+    dt : float, optional
+        The step size for the solver. If an adaptive solver is used,
+        this is the initial step size. Default: 0.01
+    key : jax.Array
+        Key for the random number generator.
     """
+
+    fixed_sigma: bool
+    log_sigma: jax.Array
+    constant_noise: bool
 
     def __init__(
         self,
         n_genes: int,
-        adj: Optional[torch.Tensor] = None,
+        adj: Optional[jax.Array] = None,
         adj_init_normal: bool = False,
         adj_sparsity: float = 0.9,
         activation: Literal["sigmoid", "identity", "softplus", "relu"] = "sigmoid",
-        sde_type: Literal["ito", "stratonovich"] = "ito",
         sigma: float = 0.1,
         shared_sigma: bool = True,
         fixed_sigma: bool = False,
         constant_noise: bool = True,
+        solver: diffrax.AbstractSolver = diffrax.ItoMilstein(),
+        solver_atol: float = 1e-4,
+        solver_rtol: float = 1e-5,
+        dt: float = 0.01,
+        *,
+        key: jax.Array,
+        **kwargs,
     ):
         super().__init__(
             n_genes=n_genes,
@@ -183,31 +281,61 @@ class GRNModelSDE(GRNModel):
             adj_init_normal=adj_init_normal,
             adj_sparsity=adj_sparsity,
             activation=activation,
+            solver=solver,
+            solver_atol=solver_atol,
+            solver_rtol=solver_rtol,
+            dt=dt,
+            key=key,
+            **kwargs,
         )
-        self.noise_type = "diagonal"
-        self.sde_type = sde_type
-        if shared_sigma:
-            self.log_sigma = torch.nn.Parameter(
-                torch.log(torch.tensor([sigma])), requires_grad=(not fixed_sigma)
-            )
-        else:
+        self.hyperparams.update(
+            {
+                "sigma": sigma,
+                "shared_sigma": shared_sigma,
+                "fixed_sigma": fixed_sigma,
+                "constant_noise": constant_noise,
+            }
+        )
+        self.fixed_sigma = fixed_sigma
+        self.log_sigma = jnp.log(sigma)
+        if not shared_sigma:
             if fixed_sigma:
                 raise NotImplementedError("Fixed, gene-wise sigma is not implemented.")
             else:
-                self.log_sigma = torch.nn.Parameter(
-                    torch.log(torch.ones((n_genes)) * sigma)
-                )
-        self.constant_noise = torch.nn.Buffer(torch.tensor(constant_noise))
+                self.log_sigma = jnp.broadcast_to(self.log_sigma, n_genes)
+        self.constant_noise = constant_noise
 
-    def f(self, t, x):
-        return super().forward(t, x)
-
-    def g(self, t, x):
-        sigma = self.log_sigma.exp().expand(x.size(0), x.size(1))
-        if self.constant_noise:
-            return sigma
+    def diffusion(self, t, y, args):
+        if self.fixed_sigma:
+            sigma = jnp.broadcast_to(
+                jnp.exp(jax.lax.stop_gradient(self.log_sigma)), y.shape
+            )
         else:
-            return sigma * x
+            sigma = jnp.broadcast_to(jnp.exp(self.log_sigma), y.shape)
+        if self.constant_noise:
+            diag = sigma
+        else:
+            diag = sigma * y
+        return lx.DiagonalLinearOperator(diag)
+
+    def __call__(self, ts, y0, key):
+        brownian = diffrax.VirtualBrownianTree(
+            ts[0], ts[-1], tol=self.dt / 2, shape=y0.shape, key=key
+        )
+        terms = diffrax.MultiTerm(
+            diffrax.ODETerm(self.drift), diffrax.ControlTerm(self.diffusion, brownian)
+        )
+        solution = diffrax.diffeqsolve(
+            terms,
+            self.solver,
+            t0=ts[0],
+            t1=ts[-1],
+            dt0=self.dt,
+            y0=y0,
+            stepsize_controller=self.step_size_controller,
+            saveat=diffrax.SaveAt(ts=ts),
+        )
+        return solution.ys
 
 
 class BifurcatingSDE(GRNModelSDE):
@@ -216,11 +344,7 @@ class BifurcatingSDE(GRNModelSDE):
     """
 
     def __init__(self):
-        super().__init__(2)
-        adj = torch.tensor([[2, -2.0], [-2.0, 2.0]])
-        bias = torch.tensor([1.0, 1.0])
-        decay_rate = torch.tensor([0.6, 0.6])
-        with torch.no_grad():
-            self.adj.copy_(adj.float())
-            self.log_bias.copy_(torch.log(bias.float()))
-            self.log_decay_rate.copy_(torch.log(decay_rate.float()))
+        super().__init__(2, dt=0.1, key=jax.random.key(42))
+        self.adj = jnp.asarray([[2, -2.0], [-2.0, 2.0]])
+        self.log_bias = jnp.log(jnp.asarray([1.0, 1.0]))
+        self.log_decay_rate = jnp.log(jnp.asarray([0.6, 0.6]))

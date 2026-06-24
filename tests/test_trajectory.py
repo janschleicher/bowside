@@ -1,15 +1,16 @@
 from typing import Literal
 
+import jax
 import numpy as np
 import pytest
-import torch
+from jax import numpy as jnp
 
 from bowside.dataset import BifurcatingMarkovChainDataset, BifurcatingPseudotimeDataset
 from bowside.model import GRNModelSDE
 from bowside.trajectory import infer_cell_fates, infer_trajectories
 
-Y0_BALANCED = torch.tensor([[0.0, 0.0]]).repeat(500, 1)
-Y0_IMBALANCED = torch.tensor([[0.0, 0.3]]).repeat(500, 1)
+Y0_BALANCED = jnp.repeat(jnp.asarray([[0.0, 0.0]]), 500, 0)
+Y0_IMBALANCED = jnp.repeat(jnp.asarray([[0.0, 0.3]]), 500, 0)
 
 
 @pytest.mark.parametrize("y0", [Y0_BALANCED, Y0_IMBALANCED])
@@ -19,7 +20,7 @@ Y0_IMBALANCED = torch.tensor([[0.0, 0.3]]).repeat(500, 1)
     [("euclidean", "ward"), ("euclidean", "complete"), ("cosine", "average")],
 )
 def test_trajectory_inference(
-    y0: torch.Tensor,
+    y0: jax.Array,
     trajectory_mode: Literal["mean", "median"],
     metric: Literal["cityblock", "correlation", "cosine", "euclidean", "sqeuclidean"],
     linkage_method: Literal[
@@ -31,10 +32,10 @@ def test_trajectory_inference(
     infer_trajectories(
         dataset,
         model,
+        key=jax.random.key(42),
         metric=metric,
         linkage_method=linkage_method,
         trajectory_mode=trajectory_mode,
-        dt=0.1,
     )
     adata = dataset.adata
     assert "bowside" in adata.uns, "Field 'bowside' missing from `adata.uns`."
@@ -70,7 +71,7 @@ def test_trajectory_inference(
         gene_i_up_trajectory = trajectory_inference_results["trajectories"][
             :, -1, i
         ].argmax()
-        final_expression = simulations[-1, :, i]
+        final_expression = simulations[:, -1, i]
         cluster_indices = (
             trajectory_inference_results["trajectory_inference_clusters"]
             == gene_i_up_trajectory + 1
@@ -88,12 +89,12 @@ def test_trajectory_inference(
             trajectory
             == agg_func(
                 simulations[
-                    :,
                     trajectory_inference_results["trajectory_inference_clusters"]
                     == j + 1,
                     :,
+                    :,
                 ],
-                axis=1,
+                axis=0,
             )
         ), (
             f"Trajectory coordinates for trajectory {j} are not the "
@@ -101,6 +102,7 @@ def test_trajectory_inference(
         )
 
 
+# FIXME: fails with EquinoxRuntimeError -> maximum number of solver steps was reached
 @pytest.mark.parametrize("min_clusters, max_clusters", [(1, 1), (2, 3), (1, 6), (2, 2)])
 def test_trajectory_inference_cluster_ranges(min_clusters: int, max_clusters: int):
     dataset = BifurcatingMarkovChainDataset(Y0_BALANCED)
@@ -108,9 +110,9 @@ def test_trajectory_inference_cluster_ranges(min_clusters: int, max_clusters: in
     infer_trajectories(
         dataset,
         model,
+        key=jax.random.key(42),
         min_clusters=min_clusters,
         max_clusters=max_clusters,
-        dt=0.1,
     )
     adata = dataset.adata
     assert "bowside" in adata.uns, "Field 'bowside' missing from `adata.uns`."
@@ -170,33 +172,42 @@ def test_trajectory_inference_cluster_ranges(min_clusters: int, max_clusters: in
 
 def test_trajectory_inference_markov_chain_dataset():
     dataset = BifurcatingMarkovChainDataset(Y0_BALANCED)
-    model = GRNModelSDE(n_genes=dataset.n_genes())
-    infer_trajectories(dataset, model, min_clusters=2, max_clusters=3, dt=0.01)
+    model = GRNModelSDE(n_genes=dataset.n_genes(), key=jax.random.key(42), dt=0.1)
+    infer_trajectories(
+        dataset, model, key=jax.random.key(97), min_clusters=2, max_clusters=3
+    )
 
 
 def test_trajectory_inference_exceptions():
     dataset = BifurcatingPseudotimeDataset(Y0_BALANCED)
     model = dataset.sde
     with pytest.raises(TypeError, match="Invalid dataset type"):
-        infer_trajectories(dataset.adata, model, dt=0.1)  # type: ignore
+        infer_trajectories(dataset.adata, model, key=jax.random.key(42))  # type: ignore
     with pytest.raises(
         TypeError,
         match="Parameters `min_clusters` and `max_clusters must be of type int",
     ):
-        infer_trajectories(dataset, model, min_clusters=1.2, dt=0.1)  # type: ignore
+        infer_trajectories(dataset, model, key=jax.random.key(42), min_clusters=1.2)  # type: ignore
     with pytest.raises(
         TypeError,
         match="Parameters `min_clusters` and `max_clusters must be of type int",
     ):
-        infer_trajectories(dataset, model, max_clusters="2", dt=0.1)  # type: ignore
+        infer_trajectories(dataset, model, key=jax.random.key(42), max_clusters="2")  # type: ignore
     with pytest.raises(ValueError, match="Invalid range for number of clusters"):
-        infer_trajectories(dataset, model, min_clusters=4, max_clusters=3, dt=0.1)
+        infer_trajectories(
+            dataset, model, key=jax.random.key(42), min_clusters=4, max_clusters=3
+        )
     with pytest.raises(ValueError, match="Parameter `min_clusters` must be positive."):
-        infer_trajectories(dataset, model, min_clusters=-2, dt=0.1)
+        infer_trajectories(dataset, model, key=jax.random.key(42), min_clusters=-2)
     with pytest.raises(
         NotImplementedError, match="Trajectory mode .+ is not implemented."
     ):
-        infer_trajectories(dataset, model, trajectory_mode="max", dt=0.1)  # type: ignore
+        infer_trajectories(
+            dataset,
+            model,
+            key=jax.random.key(42),
+            trajectory_mode="max",  # type: ignore
+        )
 
 
 @pytest.mark.parametrize(
@@ -205,9 +216,13 @@ def test_trajectory_inference_exceptions():
 )
 def test_fate_inference(n_clusters: int, score_threshold: float):
     dataset = BifurcatingPseudotimeDataset(Y0_BALANCED)
-    model = GRNModelSDE(n_genes=dataset.n_genes())
+    model = dataset.sde
     infer_trajectories(
-        dataset, model, min_clusters=n_clusters, max_clusters=n_clusters, dt=0.01
+        dataset,
+        model,
+        key=jax.random.key(42),
+        min_clusters=n_clusters,
+        max_clusters=n_clusters,
     )
     infer_cell_fates(dataset, score_threshold=score_threshold)
 

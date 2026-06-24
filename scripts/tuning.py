@@ -1,26 +1,24 @@
 import argparse
 import logging
+import multiprocessing as mp
+import os
 from functools import partial
 from multiprocessing import Pool
 from pathlib import Path
+from typing import Literal, Optional
 
 import networkx as nx
-import numpy as np
 import optuna
 import pandas as pd
 import scanpy as sc
-import torch
 from optuna.storages import JournalStorage
 from optuna.storages.journal import JournalFileBackend
 
 from bowside.dataset import PseudotimeDataset
 from bowside.model import GRNModelSDE
-from bowside.training import (
-    NaNTensorError,
-    qqloss,
-    sinkhorn_loss,
-    train_integration,
-)
+from bowside.training import mse_loss, qqloss, sinkhorn_loss, train_integration
+
+os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
 
 
 def objective(
@@ -30,11 +28,19 @@ def objective(
     layer: str,
     mask_var: str,
     pseudotime_key: str,
-    adj_list: pd.DataFrame,
+    adj_list: Optional[pd.DataFrame],
     dt: float,
     loss_func: str,
     weighted_loss: bool,
+    regularization: Optional[Literal["l1", "l2"]],
+    seed: int,
 ):
+    import diffrax
+    import jax
+    import optax
+    from jax import numpy as jnp
+
+    key = jax.random.fold_in(jax.random.key(seed), trial.number)
     # Setup per-trial logger
     checkpoint_dir = out_dir / str(trial.number)
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
@@ -74,75 +80,81 @@ def objective(
         raise optuna.TrialPruned("Cannot use fixed, gene-wise sigma.")
 
     # Model setup
-    adj_list = adj_list[
-        (adj_list.source.isin(dataset.gene_names))
-        & (adj_list.target.isin(dataset.gene_names))
-    ]
-    grn = nx.from_pandas_edgelist(
-        adj_list, source="source", target="target", create_using=nx.DiGraph
-    )
-    for gene in dataset.gene_names:
-        if gene not in grn.nodes():
-            grn.add_node(gene)
+    adj = None
+    if adj_list is not None:
+        adj_list = adj_list[
+            (adj_list.source.isin(dataset.gene_names))
+            & (adj_list.target.isin(dataset.gene_names))
+        ]
+        grn = nx.from_pandas_edgelist(
+            adj_list, source="source", target="target", create_using=nx.DiGraph
+        )
+        for gene in dataset.gene_names:
+            if gene not in grn.nodes():
+                grn.add_node(gene)
+        adj = jnp.asarray(nx.to_numpy_array(grn, nodelist=dataset.gene_names))
+
+    # Optimizer setup
+    optimizer_name = trial.suggest_categorical("optimizer", ["Adam", "RMSprop"])
+    lr = trial.suggest_float("lr", 1e-5, 1e-1, log=True)
+    optimizer = getattr(optax, optimizer_name.lower())(learning_rate=lr)
+
+    # Training parameters
+    num_epochs = trial.suggest_int("num_epochs", low=500, high=5000, step=500)
+    solver_method = trial.suggest_categorical("solver_method", ["Euler", "ItoMilstein"])
+
+    key_init, key_train = jax.random.split(key)
     model = GRNModelSDE(
         dataset.n_genes(),
-        adj=torch.from_numpy(
-            nx.to_numpy_array(grn, nodelist=dataset.gene_names).astype(np.float32)
-        ),
+        adj=adj,
         adj_init_normal=adj_init_normal,
         sigma=sigma,
         shared_sigma=shared_sigma,
         fixed_sigma=fixed_sigma,
         constant_noise=constant_noise,
+        solver=getattr(diffrax, solver_method)(),
+        dt=dt,
+        key=key_init,
     )
 
-    # Optimizer setup
-    optimizer_name = trial.suggest_categorical("optimizer", ["Adam", "RMSprop"])
-    lr = trial.suggest_float("lr", 1e-5, 1e-1, log=True)
-    optimizer = getattr(torch.optim, optimizer_name)(model.parameters(), lr=lr)
-
-    # Training parameters
-    num_epochs = trial.suggest_int("num_epochs", low=500, high=5000, step=500)
-    solver_method = trial.suggest_categorical("solver_method", ["euler", "milstein"])
+    # Regularization
+    if regularization is not None:
+        regularization_strength = trial.suggest_float(
+            "regularization_strength", 1e-6, 1e-2, log=True
+        )
+    else:
+        regularization_strength = (
+            0.0001  # not used, but necessary for calling the function
+        )
 
     # Training
     weight = None
     if weighted_loss:
-        weight = torch.sqrt(torch.linspace(0.0, 10.0**2, dataset.time_points.size(0)))
+        weight = jnp.sqrt(jnp.linspace(0.0, 10.0**2, dataset.time_points.size(0)))
     if loss_func == "sinkhorn":
         loss_fn = partial(sinkhorn_loss, weight=weight)
     elif loss_func == "qqloss":
         loss_fn = partial(
             qqloss,
-            metric=torch.nn.functional.mse_loss,
-            dim=1,
+            metric=mse_loss,
+            dim=0,
             n_quantiles=100,
             weight=weight,
         )
 
-    try:
-        _, test_losses = train_integration(
-            dataset,
-            model,
-            optimizer,
-            loss_fn,
-            num_epochs=num_epochs,
-            solver_method=solver_method,
-            dt=dt,
-            atol=1e-9,
-            checkpoint="final",
-            checkpoint_dir=checkpoint_dir,
-            logger=logger,
-        )
-    except NaNTensorError:
-        raise optuna.TrialPruned("Numerical instabilities during SDE integration.")
-    except ValueError as e:
-        if str(e) == "Maximum allowed size exceeded":
-            raise optuna.TrialPruned(
-                "Sinkhorn loss cannot be computed (scaling issues)."
-            )
-        else:
-            raise e
+    _, _, test_losses, _ = train_integration(
+        dataset,
+        model,
+        optimizer,
+        loss_fn,
+        key_train,
+        regularization=regularization,
+        regularization_strength=regularization_strength,
+        num_epochs=num_epochs,
+        checkpoint="final",
+        checkpoint_dir=checkpoint_dir,
+        logger=logger,
+    )
 
     logger.info(f"Final test loss: {test_losses[-1]}")
     file_handler.flush()
@@ -159,6 +171,7 @@ def run_optimization(
     dataset: str,
     loss_func: str,
     weighted_loss: bool,
+    regularization: Optional[Literal["l1", "l2"]],
     n_trials: int,
 ):
     study = optuna.create_study(
@@ -171,6 +184,7 @@ def run_optimization(
     study.set_user_attr("dataset", dataset)
     study.set_user_attr("loss_function", loss_func)
     study.set_user_attr("weighted_loss", str(weighted_loss))
+    study.set_user_attr("regularization", regularization)
     study.optimize(objective_func, n_trials=n_trials)
 
 
@@ -200,6 +214,8 @@ if __name__ == "__main__":
         "--adj-file",
         type=str,
         help="CSV file containg the adjacency list for initialization.",
+        required=False,
+        default=None,
     )
     parser.add_argument(
         "--adj-source-col",
@@ -249,6 +265,14 @@ if __name__ == "__main__":
         "the importance of later time points.",
     )
     parser.add_argument(
+        "--regularization",
+        type=str,
+        choices=["l1", "l2"],
+        required=False,
+        default=None,
+        help="Regularization of adjacency matrix weights.",
+    )
+    parser.add_argument(
         "--n-trials", type=int, default=100, help="Number of trials for optuna tuning."
     )
     parser.add_argument(
@@ -263,19 +287,31 @@ if __name__ == "__main__":
         default=1,
         help="Number of parallel processes to run.",
     )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=42,
+        help="Random seed for the initial, study-level JAX PRNG key.",
+    )
     args = parser.parse_args()
 
+    mp.set_start_method("spawn", force=True)
+
     # Load and filter adjacency list
-    adj_list = pd.read_csv(args.adj_file)
-    if args.adj_filter_col is not None:
-        if args.adj_filter_value is None:
-            adj_list = adj_list[adj_list[args.adj_filter_col]]  # Assume boolean
-        else:
-            adj_list = adj_list[adj_list[args.adj_filter_col] == args.adj_filter_value]
-    adj_list = adj_list.rename(
-        columns={args.adj_source_col: "source", args.adj_target_col: "target"}
-    )
-    adj_list = adj_list[["source", "target"]]
+    adj_list = None
+    if args.adj_file is not None:
+        adj_list = pd.read_csv(args.adj_file)
+        if args.adj_filter_col is not None:
+            if args.adj_filter_value is None:
+                adj_list = adj_list[adj_list[args.adj_filter_col]]  # Assume boolean
+            else:
+                adj_list = adj_list[
+                    adj_list[args.adj_filter_col] == args.adj_filter_value
+                ]
+        adj_list = adj_list.rename(
+            columns={args.adj_source_col: "source", args.adj_target_col: "target"}
+        )
+        adj_list = adj_list[["source", "target"]]
 
     out_dir = Path(args.output)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -292,6 +328,8 @@ if __name__ == "__main__":
         dt=args.dt,
         loss_func=args.loss_func,
         weighted_loss=args.weighted_loss,
+        regularization=args.regularization,
+        seed=args.seed,
     )
 
     # Run study
@@ -305,6 +343,7 @@ if __name__ == "__main__":
                 dataset=args.input,
                 loss_func=args.loss_func,
                 weighted_loss=args.weighted_loss,
+                regularization=args.regularization,
                 n_trials=args.n_trials_per_worker,
             ),
             range(args.n_trials // args.n_trials_per_worker),

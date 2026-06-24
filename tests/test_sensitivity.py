@@ -1,8 +1,9 @@
 from typing import Literal, Union
 
+import jax
 import numpy as np
 import pytest
-import torch
+from jax import numpy as jnp
 
 from bowside.dataset import BifurcatingMarkovChainDataset, BifurcatingPseudotimeDataset
 from bowside.model import GRNModelSDE
@@ -10,7 +11,7 @@ from bowside.sensitivity import simulate_all_knockouts, simulate_knockout
 from bowside.training import qqloss
 from bowside.trajectory import infer_trajectories
 
-Y0 = torch.tensor([[0.0, 0.0]]).repeat(500, 1)
+Y0 = jnp.asarray([[0.0, 0.0]]).repeat(500, 0)
 
 
 @pytest.mark.parametrize("dataset_type", ["pseudotime", "markov"])
@@ -32,11 +33,14 @@ def test_simulate_knockout(
     # Sanity check
     assert "bowside" not in dataset.adata.uns
 
+    key = jax.random.key(42)
+
     if simulate_before:
-        infer_trajectories(dataset, model, dt=0.1, min_clusters=1, max_clusters=1)
+        key, sub_key = jax.random.split(key)
+        infer_trajectories(dataset, model, key=sub_key, min_clusters=1, max_clusters=1)
 
     sequences_wt, sequences_ko, diff = simulate_knockout(
-        dataset, model, gene, qqloss, dt=0.1, loss_kwargs={"dim": 1}
+        dataset, model, gene, qqloss, key=key, loss_kwargs={"dim": 0}
     )
     adata = dataset.adata
     assert "bowside" in adata.uns, "Field 'bowside' missing from `adata.uns`."
@@ -45,7 +49,7 @@ def test_simulate_knockout(
     assert "simulations" in results, (
         "Wild type simulations are missing from the results."
     )
-    assert np.all(sequences_wt.detach().cpu().numpy() == results["simulations"]), (
+    assert np.all(np.asarray(sequences_wt) == results["simulations"]), (
         "Mismatch between returned sequences and those saved to adata for wild type."
     )
 
@@ -55,17 +59,17 @@ def test_simulate_knockout(
     assert ko_simulations_key in results, (
         "Knockout simulations are missing from the results."
     )
-    assert np.all(sequences_ko.detach().cpu().numpy() == results[ko_simulations_key]), (
+    assert np.all(np.asarray(sequences_ko) == results[ko_simulations_key]), (
         "Mismatch between returned sequences and those saved to adata for knockout."
     )
 
     gene_idx = gene if isinstance(gene, int) else dataset.gene_names.get_loc(gene)
     assert isinstance(gene_idx, int)
-    assert torch.all(sequences_ko[:, :, gene_idx] == 0), (
+    assert jnp.all(sequences_ko[:, :, gene_idx] == 0), (
         "The expression of the knockout gene should be 0."
     )
 
-    assert sequences_wt.size() == sequences_ko.size(), (
+    assert sequences_wt.shape == sequences_ko.shape, (
         "Wild type and knockout simulations are not of the same shape."
     )
 
@@ -77,20 +81,21 @@ def test_simulate_knockout_exceptions():
     with pytest.raises(TypeError, match="Invalid dataset type"):
         simulate_knockout(dataset.adata, dataset.sde, 0, qqloss)  # type: ignore
 
-    model = GRNModelSDE(3)
+    key_init, key_sim = jax.random.split(jax.random.key(42))
+    model = GRNModelSDE(3, key=key_init)
     with pytest.raises(ValueError, match="Incompatible number of genes"):
-        simulate_knockout(dataset, model, 0, qqloss)
+        simulate_knockout(dataset, model, 0, qqloss, key_sim)
 
     model = dataset.sde
     with pytest.raises(KeyError, match="Gene .+ not found in the dataset"):
-        simulate_knockout(dataset, model, "Nfkb", qqloss)
+        simulate_knockout(dataset, model, "Nfkb", qqloss, key_sim)
     with pytest.raises(IndexError, match="Gene index 3 out of bounds for dataset"):
-        simulate_knockout(dataset, model, 3, qqloss)
+        simulate_knockout(dataset, model, 3, qqloss, key_sim)
     with pytest.raises(IndexError, match="Gene index -1 out of bounds for dataset"):
-        simulate_knockout(dataset, model, -1, qqloss)
+        simulate_knockout(dataset, model, -1, qqloss, key_sim)
 
     with pytest.raises(TypeError, match="Parameter `gene` must be of type str or int"):
-        simulate_knockout(dataset, model, 3.14, qqloss)  # type: ignore
+        simulate_knockout(dataset, model, 3.14, qqloss, key_sim)  # type: ignore
 
 
 @pytest.mark.parametrize("dataset_type", ["pseudotime", "markov"])
@@ -107,7 +112,7 @@ def test_simulate_all_knockouts(
         dataset.adata.uns["bowside"] = {}
         dataset.adata.uns["bowside"]["sensitivity"] = {}
     global_effects, edge_specific_effects = simulate_all_knockouts(
-        dataset, model, qqloss, dt=0.1, loss_kwargs={"dim": 1}
+        dataset, model, qqloss, jax.random.key(42), loss_kwargs={"dim": 0}
     )
     adata = dataset.adata
     assert "bowside" in adata.uns, "Field 'bowside' missing from `adata.uns`."

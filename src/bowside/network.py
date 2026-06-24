@@ -77,7 +77,7 @@ def _get_network(
                 idx = None
             network = nx.from_pandas_adjacency(
                 pd.DataFrame(
-                    model.adj.detach().cpu().numpy(),
+                    model.adj,
                     index=idx,
                     columns=idx,
                 ),

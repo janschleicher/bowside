@@ -5,6 +5,8 @@ import pytest
 import scanpy as sc
 import scvelo as scv
 
+os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
+
 TEST_DATA_PATH = (
     Path(os.path.dirname(os.path.realpath(__file__))) / "test_data/adata_velocity.h5ad"
 )
@@ -30,3 +32,12 @@ def setup_adata():
         scv.tl.velocity(ADATA)
         scv.tl.velocity_graph(ADATA)
         ADATA.write_h5ad(TEST_DATA_PATH)
+
+
+@pytest.fixture(scope="session", autouse=True)
+def make_tmp_dir():
+    TMPDIR = Path(os.path.dirname(os.path.realpath(__file__))) / "tmp"
+    os.environ["TMPDIR"] = str(TMPDIR)
+    TMPDIR.mkdir(parents=True, exist_ok=True)
+    yield
+    os.removedirs(TMPDIR)
