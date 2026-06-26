@@ -33,6 +33,7 @@ def objective(
     loss_func: str,
     weighted_loss: bool,
     regularization: Optional[Literal["l1", "l2"]],
+    regularization_strength: Optional[float],
     seed: int,
 ):
     import diffrax
@@ -119,9 +120,10 @@ def objective(
 
     # Regularization
     if regularization is not None:
-        regularization_strength = trial.suggest_float(
-            "regularization_strength", 1e-6, 1e-2, log=True
-        )
+        if regularization_strength is None:
+            regularization_strength = trial.suggest_float(
+                "regularization_strength", 1e-6, 1e-2, log=True
+            )
     else:
         regularization_strength = (
             0.0001  # not used, but necessary for calling the function
@@ -172,6 +174,7 @@ def run_optimization(
     loss_func: str,
     weighted_loss: bool,
     regularization: Optional[Literal["l1", "l2"]],
+    regularization_strength: Optional[float],
     n_trials: int,
 ):
     study = optuna.create_study(
@@ -185,6 +188,7 @@ def run_optimization(
     study.set_user_attr("loss_function", loss_func)
     study.set_user_attr("weighted_loss", str(weighted_loss))
     study.set_user_attr("regularization", regularization)
+    study.set_user_attr("regularization_strength", regularization_strength)
     study.optimize(objective_func, n_trials=n_trials)
 
 
@@ -273,6 +277,13 @@ if __name__ == "__main__":
         help="Regularization of adjacency matrix weights.",
     )
     parser.add_argument(
+        "--regularization-strength",
+        type=float,
+        required=False,
+        default=None,
+        help="Adjacency matrix regularization strength. With the default `None`, treated as hyperparameter.",
+    )
+    parser.add_argument(
         "--n-trials", type=int, default=100, help="Number of trials for optuna tuning."
     )
     parser.add_argument(
@@ -329,6 +340,7 @@ if __name__ == "__main__":
         loss_func=args.loss_func,
         weighted_loss=args.weighted_loss,
         regularization=args.regularization,
+        regularization_strength=args.regulariation_strength,
         seed=args.seed,
     )
 
@@ -344,6 +356,7 @@ if __name__ == "__main__":
                 loss_func=args.loss_func,
                 weighted_loss=args.weighted_loss,
                 regularization=args.regularization,
+                regularization_strength=args.regularization_strength,
                 n_trials=args.n_trials_per_worker,
             ),
             range(args.n_trials // args.n_trials_per_worker),
