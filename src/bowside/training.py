@@ -824,7 +824,7 @@ def train_integration(
             if checkpoint == "best":
                 log.info(
                     f"Best model was at epoch {best_model_epoch}, saved "
-                    f"as {str(checkpoint_dir / 'checkpoint_best_model.tar')}"
+                    f"as {str(checkpoint_dir / 'checkpoint_best_model.eqx')}"
                 )
 
         return model, train_losses, test_losses, opt_state
