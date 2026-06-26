@@ -107,19 +107,19 @@ class GRNModel(eqx.Module):
             self.adj_init = adj.copy()
 
             # Mask to restrict it to only those edges that are in the prior
-            self.adj_mask = (adj != 0).astype(int)
+            self.adj_mask = adj != 0
 
             # Ensure that adj has same signs as adj_init
             self.adj = jnp.abs(self.adj) * adj
 
         else:
             sparse_mask = (
-                jax.random.uniform(key, self.adj.shape, minval=0.0, maxval=1.0)
+                jax.random.uniform(sparse_key, self.adj.shape, minval=0.0, maxval=1.0)
                 > adj_sparsity
             ).astype(int)
             self.adj = self.adj * sparse_mask
             self.adj_init = self.adj.copy()
-            self.adj_mask = jnp.ones_like(self.adj)
+            self.adj_mask = jnp.ones_like(self.adj, dtype=jnp.bool)
 
         # Use log of bias, decay rates, and scale to ensure positivity
         initializer = jax.nn.initializers.normal(stddev=0.01)
@@ -179,6 +179,11 @@ class GRNModel(eqx.Module):
             Absolute threshold for pruning edges close to 0. Default: 1e-3.
         rtol : float, optional
             Relative threshold for pruning edges close to 0. Default: 1e-3.
+
+        Returns
+        -------
+        GRNModel
+            Pruned model.
         """
         adj_mask = self.adj_mask * ~jnp.isclose(self.adj, 0, rtol=rtol, atol=atol)
         model = eqx.tree_at(lambda m: m.adj_mask, self, adj_mask)

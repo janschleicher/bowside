@@ -124,7 +124,7 @@ def simulate_knockout(
     assert isinstance(gene_idx, int)
 
     # Remove all outgoing edges from the knockout gene
-    adj_mask = model.adj_mask.at[gene_idx, :].set(0)
+    adj_mask = model.adj_mask.at[gene_idx, :].set(False)
     model_ko = eqx.tree_at(lambda m: m.adj_mask, model, adj_mask)
 
     # Get wildtype simulations
