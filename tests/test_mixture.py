@@ -209,7 +209,7 @@ def test_gaussian_mixture_timeseries():
     with pytest.raises(
         ValueError,
         match="Parameter `sequences` must be 3-dimensional with shape "
-        "\\(n_steps, n_sequences, n_var\\).",
+        "\\(n_sequences, n_steps, n_var\\).",
     ):
         GaussianMixtureTimeseries(
             sequences=sequences[0, :, :],

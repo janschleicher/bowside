@@ -346,14 +346,12 @@ class BifurcatingMarkovChainDataset(MarkovChainDataset):
         ts = jnp.asarray(self.time_points.detach().cpu().numpy())
         simulations = jax.vmap(self.sde, in_axes=[None, 0, 0])(ts, y0, keys)
         assert isinstance(simulations, jax.Array)
-        simulations = torch.from_numpy(
-            np.swapaxes(np.asarray(simulations).copy(), 0, 1)
-        )
+        simulations = torch.from_numpy(np.asarray(simulations).copy())
 
         # Store attributes
         self.X = simulations.reshape(-1, simulations.shape[-1])
         self.markov_chains = torch.arange(self.X.shape[0]).reshape(
-            simulations.shape[1], simulations.shape[0]
+            simulations.shape[0], simulations.shape[1]
         )
         self.gene_names = pd.Index([f"gene_{i}" for i in range(simulations.size(2))])
         self.adata = ad.AnnData(
@@ -377,15 +375,13 @@ class BifurcatingPseudotimeDataset(PseudotimeDataset):
         ts = jnp.asarray(self.time_points.detach().cpu().numpy())
         simulations = jax.vmap(self.sde, in_axes=[None, 0, 0])(ts, y0, keys)
         assert isinstance(simulations, jax.Array)
-        simulations = torch.from_numpy(
-            np.swapaxes(np.asarray(simulations).copy(), 0, 1)
-        )
+        simulations = torch.from_numpy(np.asarray(simulations).copy())
 
         # Store attributes
         self.X = simulations.reshape(-1, simulations.shape[-1])
-        self.pseudotime = self.time_points.repeat_interleave(simulations.shape[1])
+        self.pseudotime = self.time_points.repeat_interleave(simulations.shape[0])
         self.sampled_cells = torch.arange(self.X.shape[0]).reshape(
-            simulations.shape[1], simulations.shape[0]
+            simulations.shape[0], simulations.shape[1]
         )
 
         self.gene_names = pd.Index([f"gene_{i}" for i in range(simulations.size(2))])

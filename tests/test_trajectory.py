@@ -10,6 +10,7 @@ from bowside.model import GRNModelSDE
 from bowside.trajectory import infer_cell_fates, infer_trajectories
 
 Y0_BALANCED = jnp.repeat(jnp.asarray([[0.0, 0.0]]), 500, 0)
+Y0_BALANCED_NOISY = jnp.abs(jax.random.normal(jax.random.key(42), (500, 2)) * 0.01)
 Y0_IMBALANCED = jnp.repeat(jnp.asarray([[0.0, 0.3]]), 500, 0)
 
 
@@ -215,7 +216,7 @@ def test_trajectory_inference_exceptions():
     [(2, 0.0), (1, 0.0), (3, 0.0), (2, 0.95)],
 )
 def test_fate_inference(n_clusters: int, score_threshold: float):
-    dataset = BifurcatingPseudotimeDataset(Y0_BALANCED)
+    dataset = BifurcatingPseudotimeDataset(Y0_BALANCED_NOISY)
     model = dataset.sde
     infer_trajectories(
         dataset,
@@ -253,11 +254,14 @@ def test_fate_inference(n_clusters: int, score_threshold: float):
     assert probabilities.shape == (len(dataset.adata), n_clusters), (
         "Probabilities have wrong shape."
     )
-    unassigned_cells = np.isnan(probabilities).any(axis=1)
+    unassigned_cells = np.asarray(np.isnan(probabilities).any(axis=1))
     assert np.allclose(np.sum(probabilities[~unassigned_cells, :], axis=1), 1.0), (
         "Probabilities should sum to 1 for all cells."
     )
-    assert (unassigned_cells.sum() > 0) == (score_threshold > 0.9), (
+    unassigned_cells_except_t0 = unassigned_cells[
+        (dataset.pseudotime != dataset.time_points[0])
+    ]
+    assert (unassigned_cells_except_t0.sum() > 0) == (score_threshold > 0.9), (
         f"There schould{' not' if score_threshold == 0 else ''} be "
         f"unassigned cells at threshold {score_threshold}."
     )

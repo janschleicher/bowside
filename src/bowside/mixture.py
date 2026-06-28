@@ -175,7 +175,7 @@ class GaussianMixtureTimeseries:
         if sequences.ndim != 3:
             raise ValueError(
                 "Parameter `sequences` must be 3-dimensional with shape "
-                "(n_steps, n_sequences, n_var)."
+                "(n_sequences, n_steps, n_var)."
             )
         if time_points.ndim != 1:
             raise ValueError("Parameter `time_points` must be 1-dimensional.")
