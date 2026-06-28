@@ -16,7 +16,11 @@ import scvelo as scv
 import torch
 from jax import numpy as jnp
 
-from bowside.dataset import MarkovChainDataset, PseudotimeDataset
+from bowside.dataset import (
+    BifurcatingPseudotimeDataset,
+    MarkovChainDataset,
+    PseudotimeDataset,
+)
 from bowside.model import GRNModel, GRNModelSDE
 from bowside.training import (
     EarlyStopping,
@@ -159,6 +163,42 @@ def test_sinkhorn_loss(
         )
     else:
         assert loss > 0, "Loss value should be greater than 0."
+
+
+def test_sinkhorn_loss_bifurcating_sde():
+    y0 = jnp.zeros((500, 2))
+    dataset = BifurcatingPseudotimeDataset(y0)
+    y_true = jnp.asarray(dataset[:].cpu().numpy())
+    key = jax.random.key(42)
+    key, pred_key = jax.random.split(key)
+    ts = jnp.asarray(dataset.time_points.cpu().numpy())
+    y_pred_true_model = integrate_model(dataset.sde, y0, ts, pred_key)
+    loss_true_model = sinkhorn_loss(y_pred_true_model, y_true)
+    assert jnp.isclose(loss_true_model, 0, atol=1e-3, rtol=1e-3), (
+        "The loss of the true model should be close to 0."
+    )
+    key, init_key = jax.random.split(key)
+    model = GRNModelSDE(
+        dataset.n_genes(),
+        sigma=0.1,
+        shared_sigma=True,
+        fixed_sigma=True,
+        constant_noise=True,
+        dt=0.1,
+        key=init_key,
+    )
+    key, pred_key = jax.random.split(key)
+    y_pred_init_model = integrate_model(model, y0, ts, pred_key)
+    loss_init_model = sinkhorn_loss(y_pred_init_model, y_true)
+    assert loss_init_model > loss_true_model, (
+        "The loss of the untrained model should be higher than the one of the true model."
+    )
+    assert ~jnp.isclose(loss_init_model, 0, atol=1e-3, rtol=1e-3), (
+        "The loss of the untrained model should not be close to 0."
+    )
+    assert loss_init_model > 0, (
+        "The loss of the untrained model should be greater than 0."
+    )
 
 
 @pytest.mark.parametrize("loss", ["qqloss", "sinkhorn"])
