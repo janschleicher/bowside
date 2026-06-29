@@ -259,9 +259,9 @@ def sinkhorn_loss(
     Parameters
     ----------
     y_pred : jax.Array
-        Predicted values.
+        Predicted values of shape (n_simulations, n_timepoints, n_var).
     y_true : jax.Array
-        True values.
+        True values of shape (n_simulations, n_timepoints, n_var).
     p : int, optional
         Specifies the ground cost function between points. Default: 2.
         Supported values:
