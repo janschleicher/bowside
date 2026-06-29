@@ -43,6 +43,9 @@ class GRNModel(eqx.Module):
         Absolute error tolerance for adaptive solvers. Default: 1e-4.
     solver_rtol : float, optional
         Relative error tolerance for adaptive solvers. Default: 1e-5.
+    solver_adaptive : bool, optional
+        Whether to use an adaptive step size if the solver is adaptive.
+        Default: False.
     dt : float, optional
         The step size for the solver. If an adaptive solver is used,
         this is the initial step size. Default: 0.01
@@ -58,7 +61,9 @@ class GRNModel(eqx.Module):
     log_scale: jax.Array
     activation: Callable[[jax.Array], jax.Array]
     solver: diffrax.AbstractSolver
+    solver_adaptive: bool
     dt: float
+    dtmin: float
     step_size_controller: diffrax.AbstractStepSizeController
     hyperparams: dict
 
@@ -72,6 +77,7 @@ class GRNModel(eqx.Module):
         solver: diffrax.AbstractSolver = diffrax.Tsit5(),
         solver_atol: float = 1e-4,
         solver_rtol: float = 1e-5,
+        solver_adaptive: bool = False,
         dt: float = 0.01,
         *,
         key: jax.Array,
@@ -86,6 +92,7 @@ class GRNModel(eqx.Module):
             "solver_name": solver.__class__.__name__,
             "solver_atol": solver_atol,
             "solver_rtol": solver_rtol,
+            "solver_adaptive": solver_adaptive,
             "dt": dt,
         }
 
@@ -139,12 +146,16 @@ class GRNModel(eqx.Module):
 
         self.solver = solver
         self.dt = dt
-        if isinstance(solver, diffrax.AbstractAdaptiveSolver):
+        if isinstance(solver, diffrax.AbstractAdaptiveSolver) and solver_adaptive:
+            self.dtmin = solver_atol / 10
             self.step_size_controller = diffrax.PIDController(
-                rtol=solver_rtol, atol=solver_atol
+                rtol=solver_rtol, atol=solver_atol, dtmin=self.dtmin
             )
+            self.solver_adaptive = True
         else:
+            self.dtmin = self.dt
             self.step_size_controller = diffrax.ConstantStepSize()
+            self.solver_adaptive = False
 
     def drift(self, t, y, args):
         return (
@@ -250,6 +261,9 @@ class GRNModelSDE(GRNModel):
         Absolute error tolerance for adaptive solvers. Default: 1e-4.
     solver_rtol : float, optional
         Relative error tolerance for adaptive solvers. Default: 1e-5.
+    solver_adaptive : bool, optional
+        Whether to use an adaptive step size if the solver is adaptive.
+        Default: False.
     dt : float, optional
         The step size for the solver. If an adaptive solver is used,
         this is the initial step size. Default: 0.01
@@ -275,6 +289,7 @@ class GRNModelSDE(GRNModel):
         solver: diffrax.AbstractSolver = diffrax.ItoMilstein(),
         solver_atol: float = 1e-4,
         solver_rtol: float = 1e-5,
+        solver_adaptive: bool = False,
         dt: float = 0.01,
         *,
         key: jax.Array,
@@ -289,6 +304,7 @@ class GRNModelSDE(GRNModel):
             solver=solver,
             solver_atol=solver_atol,
             solver_rtol=solver_rtol,
+            solver_adaptive=solver_adaptive,
             dt=dt,
             key=key,
             **kwargs,
@@ -325,7 +341,7 @@ class GRNModelSDE(GRNModel):
 
     def __call__(self, ts, y0, key):
         brownian = diffrax.VirtualBrownianTree(
-            ts[0], ts[-1], tol=self.dt / 2, shape=y0.shape, key=key
+            ts[0], ts[-1], tol=self.dtmin / 2, shape=y0.shape, key=key
         )
         terms = diffrax.MultiTerm(
             diffrax.ODETerm(self.drift), diffrax.ControlTerm(self.diffusion, brownian)
