@@ -790,7 +790,8 @@ def train_integration(
 
             # Prune edges close to 0
             if regularization is not None and pruning_frequency is not None:
-                if epoch % pruning_frequency == 0:
+                if epoch % pruning_frequency == 0 and epoch > 0:
+                    log.debug(f"Pruning at epoch {epoch}.")
                     model = model.prune(atol=pruning_atol, rtol=pruning_rtol)
 
             # Save checkpoint
