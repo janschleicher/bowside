@@ -340,7 +340,7 @@ if __name__ == "__main__":
         loss_func=args.loss_func,
         weighted_loss=args.weighted_loss,
         regularization=args.regularization,
-        regularization_strength=args.regulariation_strength,
+        regularization_strength=args.regularization_strength,
         seed=args.seed,
     )
 
