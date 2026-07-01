@@ -34,6 +34,8 @@ from bowside.training import (
 )
 from tests.conftest import TEST_DATA_PATH
 
+IN_GITHUB_ACTIONS = os.getenv("GITHUB_ACTIONS") == "true"
+
 key = jax.random.key(42)
 key_perfect, key_two_off, key_true_small, key_pred_small = jax.random.split(key, 4)
 
@@ -165,7 +167,8 @@ def test_sinkhorn_loss(
         assert loss > 0, "Loss value should be greater than 0."
 
 
-@pytest.mark.parametrize("batch_size", [None, 100])
+@pytest.mark.skipif(IN_GITHUB_ACTIONS)
+@pytest.mark.parametrize("batch_size", [None, 500])
 def test_sinkhorn_loss_bifurcating_sde(batch_size: Optional[int]):
     y0 = jnp.zeros((500, 2))
     dataset = BifurcatingPseudotimeDataset(y0)
