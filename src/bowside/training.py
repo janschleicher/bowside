@@ -22,6 +22,13 @@ from tqdm.contrib.logging import logging_redirect_tqdm
 from bowside.dataset import MarkovChainDataset, PseudotimeDataset
 from bowside.model import GRNModel, GRNModelSDE
 
+# Shim for ott-jax compatibility with JAX >= 0.9
+if not hasattr(jax.interpreters.batching, "is_vmappable"):  # type: ignore
+    jax.interpreters.batching.is_vmappable = lambda x: isinstance(  # type: ignore
+        x,
+        (jax.core.Tracer, jax.Array),  # type: ignore
+    )
+
 
 class EarlyStopping:
     """
@@ -243,13 +250,13 @@ def qqloss(
     )
 
 
-@jax.jit
+@jax.jit(static_argnames=["batch_size"])
 def sinkhorn_loss(
     y_pred: jax.Array,
     y_true: jax.Array,
     p: int = 2,
-    batch_size: int = 1024,
-    epsilon: float = 0.1,
+    batch_size: Optional[int] = None,
+    blur: float = 0.1,
     decay: float = 0.7,
     weight: Optional[jax.Array] = None,
 ) -> jax.Array:
@@ -266,14 +273,18 @@ def sinkhorn_loss(
         Specifies the ground cost function between points. Default: 2.
         Supported values:
         - p=1: Euclidean distance.
-        - p=2: Squared Euclidean distance, divided by 2.
-    batch_size : int, optional
-        If the number of points per sample is higher than this value,
-        the online version of the Sinkhorn divergence is used, computing
-        the cost matrix on the fly for `batch_size` points at a time
-        instead of storing it in memory. Default: 1024.
-    epsilon : float, optional
-        Regularization strength. Default: 0.1.
+        - p=2: Squared Euclidean distance.
+        Other powers of the Euclidean distance for p in [1, +\\infty)
+        are possible, but not recommended.
+    batch_size : Optional[int], optional
+        If `batch_size` is set to a positive integer, the online version
+        of the Sinkhorn divergence is used, computing the cost matrix on
+        the fly for `batch_size` points at a time instead of storing it
+        in memory. Otherwise, the complete cost matrix is stored in
+        memory. Default: None.
+    blur : float, optional
+        Entropic regularization strength. Epsilon is calculated as
+        blur to the power of `p`. Default: 0.1.
     decay : float, optional
         Ratio between successive values in the epsilon schedule.
         Default: 0.7.
@@ -293,12 +304,9 @@ def sinkhorn_loss(
     if y_pred.ndim != 3:
         raise ValueError("Expected shape (n_simulations, n_timepoints, n_var).")
 
-    if p == 1:
-        cost_fn = costs.Euclidean()
-    elif p == 2:
-        cost_fn = costs.PNormP(p=p)
-    else:
-        raise ValueError("Only p=1 and p=2 are supported.")
+    cost_fn = costs.EuclideanP(p)
+
+    epsilon = blur**p
 
     def sinkhorn_loss_one(x: jax.Array, y: jax.Array):
         div, _ = sinkhorn_divergence.sinkhorn_divergence(
@@ -307,7 +315,7 @@ def sinkhorn_loss(
             y,
             epsilon=epsilon_scheduler.Epsilon(target=epsilon, decay=decay),
             cost_fn=cost_fn,
-            batch_size=batch_size if y_pred.shape[0] > batch_size else None,
+            batch_size=batch_size,
         )
         return div
 

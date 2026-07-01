@@ -165,7 +165,8 @@ def test_sinkhorn_loss(
         assert loss > 0, "Loss value should be greater than 0."
 
 
-def test_sinkhorn_loss_bifurcating_sde():
+@pytest.mark.parametrize("batch_size", [None, 100])
+def test_sinkhorn_loss_bifurcating_sde(batch_size: Optional[int]):
     y0 = jnp.zeros((500, 2))
     dataset = BifurcatingPseudotimeDataset(y0)
     y_true = jnp.asarray(dataset[:].cpu().numpy())
@@ -173,8 +174,8 @@ def test_sinkhorn_loss_bifurcating_sde():
     key, pred_key = jax.random.split(key)
     ts = jnp.asarray(dataset.time_points.cpu().numpy())
     y_pred_true_model = integrate_model(dataset.sde, y0, ts, pred_key)
-    loss_true_model = sinkhorn_loss(y_pred_true_model, y_true)
-    assert jnp.isclose(loss_true_model, 0, atol=1e-3, rtol=1e-3), (
+    loss_true_model = sinkhorn_loss(y_pred_true_model, y_true, batch_size=batch_size)
+    assert jnp.isclose(loss_true_model, 0, atol=0.01, rtol=0.01), (
         "The loss of the true model should be close to 0."
     )
     key, init_key = jax.random.split(key)
@@ -189,16 +190,25 @@ def test_sinkhorn_loss_bifurcating_sde():
     )
     key, pred_key = jax.random.split(key)
     y_pred_init_model = integrate_model(model, y0, ts, pred_key)
-    loss_init_model = sinkhorn_loss(y_pred_init_model, y_true)
+    loss_init_model = sinkhorn_loss(y_pred_init_model, y_true, batch_size=batch_size)
     assert loss_init_model > loss_true_model, (
         "The loss of the untrained model should be higher than the one of the true model."
     )
-    assert ~jnp.isclose(loss_init_model, 0, atol=1e-3, rtol=1e-3), (
+    assert ~jnp.isclose(loss_init_model, 0, atol=0.01, rtol=0.01), (
         "The loss of the untrained model should not be close to 0."
     )
     assert loss_init_model > 0, (
         "The loss of the untrained model should be greater than 0."
     )
+
+
+def test_sinkhorn_loss_exceptions():
+    with pytest.raises(ValueError, match="Incompatible shapes of `y_pred`: "):
+        sinkhorn_loss(Y_PRED_SMALL, Y_TRUE)
+    with pytest.raises(
+        ValueError, match="Expected shape \\(n_simulations, n_timepoints, n_var\\)\\."
+    ):
+        sinkhorn_loss(Y_PRED_SMALL, Y_TRUE_SMALL)
 
 
 @pytest.mark.parametrize("loss", ["qqloss", "sinkhorn"])
