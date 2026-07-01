@@ -167,7 +167,7 @@ def test_sinkhorn_loss(
         assert loss > 0, "Loss value should be greater than 0."
 
 
-@pytest.mark.skipif(IN_GITHUB_ACTIONS)
+@pytest.mark.skipif(IN_GITHUB_ACTIONS, reason="Time limit.")
 @pytest.mark.parametrize("batch_size", [None, 500])
 def test_sinkhorn_loss_bifurcating_sde(batch_size: Optional[int]):
     y0 = jnp.zeros((500, 2))
