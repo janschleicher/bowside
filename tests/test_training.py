@@ -234,25 +234,160 @@ def test_loss_pseudotime_data(loss: Literal["qqloss", "sinkhorn"], weight: jax.A
 
 
 @pytest.mark.parametrize(
-    "model_type, regularization, batch_size, num_sims, shared_sigma, fixed_sigma, "
-    "constant_noise, dataset_type, checkpoint, checkpoint_dir",
+    "model_type, loss_weights, time_point_split, regularization, batch_size, num_sims, "
+    "shared_sigma, fixed_sigma, constant_noise, dataset_type, checkpoint, checkpoint_dir",
     [
-        ["ode", None, None, 100, None, None, None, "markov", "final", OUT_DIR],
-        ["ode", "l1", None, 100, None, None, None, "markov", "final", OUT_DIR],
-        ["ode", "l2", None, 100, None, None, None, "markov", "final", OUT_DIR],
-        ["ode", None, None, 100, None, None, None, "markov", "best", OUT_DIR],
-        ["ode", None, None, 100, None, None, None, "pseudo", None, None],  # works
-        ["ode", None, 100, 500, None, None, None, "markov", 1, "test_out"],
-        ["ode", None, 100, 500, None, None, None, "pseudo", 1, None],  # works
-        ["sde", None, None, 100, True, True, True, "markov", "final", OUT_DIR],
-        ["sde", None, None, 100, True, True, True, "markov", "best", OUT_DIR],
-        ["sde", None, None, 100, True, True, False, "markov", None, None],
-        ["sde", None, None, 100, True, False, True, "markov", None, None],
-        ["sde", None, None, 100, False, False, True, "markov", None, None],
+        [
+            "ode",
+            None,
+            False,
+            None,
+            None,
+            100,
+            None,
+            None,
+            None,
+            "markov",
+            "final",
+            OUT_DIR,
+        ],
+        [
+            "ode",
+            None,
+            False,
+            "l1",
+            None,
+            100,
+            None,
+            None,
+            None,
+            "markov",
+            "final",
+            OUT_DIR,
+        ],
+        [
+            "ode",
+            None,
+            False,
+            "l2",
+            None,
+            100,
+            None,
+            None,
+            None,
+            "markov",
+            "final",
+            OUT_DIR,
+        ],
+        [
+            "ode",
+            None,
+            False,
+            None,
+            None,
+            100,
+            None,
+            None,
+            None,
+            "markov",
+            "best",
+            OUT_DIR,
+        ],
+        [
+            "ode",
+            None,
+            False,
+            None,
+            None,
+            100,
+            None,
+            None,
+            None,
+            "pseudo",
+            None,
+            None,
+        ],  # works
+        ["ode", None, False, None, 100, 500, None, None, None, "markov", 1, "test_out"],
+        [
+            "ode",
+            None,
+            False,
+            None,
+            100,
+            500,
+            None,
+            None,
+            None,
+            "pseudo",
+            1,
+            None,
+        ],  # works
+        [
+            "sde",
+            None,
+            False,
+            None,
+            None,
+            100,
+            True,
+            True,
+            True,
+            "markov",
+            "final",
+            OUT_DIR,
+        ],
+        [
+            "sde",
+            None,
+            False,
+            None,
+            None,
+            100,
+            True,
+            True,
+            True,
+            "markov",
+            "best",
+            OUT_DIR,
+        ],
+        ["sde", None, False, None, None, 100, True, True, False, "markov", None, None],
+        ["sde", None, False, None, None, 100, True, False, True, "markov", None, None],
+        ["sde", None, False, None, None, 100, False, False, True, "markov", None, None],
+        [
+            "sde",
+            jnp.arange(20),
+            False,
+            None,
+            None,
+            100,
+            False,
+            False,
+            True,
+            "pseudo",
+            None,
+            None,
+        ],
+        ["sde", None, True, None, None, 100, False, False, True, "pseudo", None, None],
+        [
+            "sde",
+            jnp.arange(20),
+            True,
+            None,
+            None,
+            100,
+            False,
+            False,
+            True,
+            "pseudo",
+            None,
+            None,
+        ],
     ],
 )
 def test_train_integration(
     model_type: Literal["ode", "sde"],
+    loss_weights: Optional[jax.Array],
+    time_point_split: bool,
     regularization: Optional[Literal["l1", "l2"]],
     batch_size: int,
     num_sims: int,
@@ -318,7 +453,7 @@ def test_train_integration(
     y = jnp.asarray(dataset[:].numpy().copy())
     key, sub_key = jax.random.split(key)
     y_pred = integrate_model(model, y[:, 0, :], time_points=time_points, key=sub_key)
-    untrained_loss = qqloss(y_pred, y, dim=0, metric=loss_metric)
+    untrained_loss = qqloss(y_pred, y, weight=loss_weights, dim=0, metric=loss_metric)
 
     optim = optax.adam(learning_rate=0.001)
     if not batch_size:
@@ -332,7 +467,9 @@ def test_train_integration(
         optim,
         qqloss,
         sub_key,
+        loss_weights=loss_weights,
         regularization=regularization,
+        time_point_split=time_point_split,
         batch_size=batch_size,
         num_epochs=num_epochs,
         loss_kwargs={"metric": loss_metric, "dim": 0},
@@ -342,7 +479,7 @@ def test_train_integration(
 
     key, sub_key = jax.random.split(key)
     y_pred = integrate_model(model, y[:, 0, :], time_points=time_points, key=sub_key)
-    trained_loss = qqloss(y_pred, y, dim=0, metric=loss_metric)
+    trained_loss = qqloss(y_pred, y, weight=loss_weights, dim=0, metric=loss_metric)
 
     # Weak checks that training did something
     if trained_loss > untrained_loss:

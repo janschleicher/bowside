@@ -1,9 +1,7 @@
 """Module for training of dynamic GRN model."""
 
-import inspect
 import logging
 import operator
-from functools import partial
 from math import floor, log10
 from pathlib import Path
 from typing import Any, List, Literal, Optional, Protocol, Tuple, Union
@@ -19,7 +17,12 @@ from ott.tools import sinkhorn_divergence
 from tqdm.auto import tqdm
 from tqdm.contrib.logging import logging_redirect_tqdm
 
-from bowside.dataset import MarkovChainDataset, PseudotimeDataset
+from bowside.dataset import (
+    MarkovChainDataset,
+    PseudotimeDataset,
+    PseudotimeTimepointWrapper,
+    split_by_time_point,
+)
 from bowside.model import GRNModel, GRNModelSDE
 
 # Shim for ott-jax compatibility with JAX >= 0.9
@@ -197,7 +200,12 @@ def mae_loss(
 
 class LossFunction(Protocol):
     def __call__(
-        self, y_pred: jax.Array, y_true: jax.Array, *args: Any, **kwargs: Any
+        self,
+        y_pred: jax.Array,
+        y_true: jax.Array,
+        weight: Optional[jax.Array] = None,
+        *args: Any,
+        **kwargs: Any,
     ) -> jax.Array: ...
 
 
@@ -205,10 +213,10 @@ class LossFunction(Protocol):
 def qqloss(
     y_pred: jax.Array,
     y_true: jax.Array,
+    weight: Optional[jax.Array] = None,
     dim: int = 0,
     n_quantiles: int = 100,
     metric: LossFunction = mse_loss,
-    weight: Optional[jax.Array] = None,
 ) -> jax.Array:
     """
     Compute the difference between the quantiles of two arrays along a
@@ -220,6 +228,9 @@ def qqloss(
         Predicted values.
     y_true : jax.Array
         True values.
+    weight : Optional[jax.Array], optional
+        Weights for each sample. Only used when `metric` supports this.
+        Default: None.
     dim : int, optional
         The dimension to reduce. Default: 0.
     n_quantiles : int, optional
@@ -227,9 +238,6 @@ def qqloss(
     metric : LossFunction, optional
         Metric for comparing the quantiles. Default:
         `bowside.training.functional.mse_loss`.
-    weight : Optional[jax.Array], optional
-        Weights for each sample. Only used when `metric` supports this.
-        Default: None.
 
     Returns
     -------
@@ -237,17 +245,10 @@ def qqloss(
         Difference between quantiles.
     """
     quantiles = jnp.linspace(0, 1, n_quantiles + 1)
-    signature = inspect.signature(metric)
-    has_weight = any(param.name == "weight" for param in signature.parameters.values())
     pred = jnp.quantile(y_pred, quantiles, axis=dim)
-    if has_weight:
-        if weight is not None:
-            weight = jnp.broadcast_to(weight[None, :, None], pred.shape)
-        metric = partial(metric, weight=weight)
-    return metric(
-        pred,
-        jnp.quantile(y_true, quantiles, axis=dim),
-    )
+    if weight is not None:
+        weight = jnp.broadcast_to(weight[None, :, None], pred.shape)
+    return metric(pred, jnp.quantile(y_true, quantiles, axis=dim), weight=weight)
 
 
 @jax.jit(static_argnames=["batch_size"])
@@ -394,13 +395,47 @@ def compute_loss(
     y: jax.Array,
     time_points: jax.Array,
     loss_func: LossFunction,
+    loss_weights: Optional[jax.Array] = None,
     regularization: Optional[Literal["l1", "l2"]] = None,
     regularization_strength: float = 1e-4,
     key: Optional[jax.Array] = None,
     loss_kwargs: dict = {},
 ) -> jax.Array:
+    """
+    Compute the loss based on the true data. For this, integration
+    starting from y0 is performed first to obtain the predicted data.
+
+    Parameters
+    ----------
+    model : GRNModel
+        The gene regulatory network model.
+    y : jax.Array
+        True sequences of shape (batch_size, n_steps, n_var).
+    time_points : jax.Array
+        Time points to use for integration.
+    loss_func : LossFunction
+        Loss function to optimize.
+    loss_weights : Optional[jax.Array], optional
+        Weights for each time point/step. Default: None.
+    regularization : Optional[Literal["l1", "l2"]], optional
+        Regularization method for the adjacency method. Options are "l1"
+        and "l2". With the default, None, no regularization is applied.
+    regularization_strength : float, optional
+        Relative weight of the regularization term added to the loss if
+        `regularization` is not None. Default: 1e-4.
+    key : Optional[jax.Array], optional
+        Key for the random number generator. Required for integration
+        with a GRNModelSDE. Default: None.
+    loss_kwargs : dict, optional
+        Additional keyword arguments for the loss function. Default: {}.
+
+    Returns
+    -------
+    jax.Array
+        Value of the loss function.
+    """
     y_pred = integrate_model(model, y[:, 0, :], time_points, key)
-    loss = loss_func(y_pred, y, **loss_kwargs)
+    loss = loss_func(y_pred, y, weight=loss_weights, **loss_kwargs)
     if regularization is not None:
         jax.debug.callback(_raise_invalid_regularization, regularization)
         reg_idx = {"l1": 0, "l2": 1}
@@ -427,6 +462,7 @@ def train_step_integration(
     optimizer: optax.GradientTransformationExtraArgs,
     opt_state: optax.OptState,
     loss_func: LossFunction,
+    loss_weights: Optional[jax.Array] = None,
     regularization: Optional[Literal["l1", "l2"]] = None,
     regularization_strength: float = 1e-4,
     key: Optional[jax.Array] = None,
@@ -442,7 +478,7 @@ def train_step_integration(
     model : GRNModel
         The gene regulatory network model.
     y : jax.Array
-        Training sequences of shape (n_steps, batch_size, n_var).
+        Training sequences of shape (batch_size, n_steps, n_var).
     time_points : jax.Array
         Time points to use for integration.
     optimizer : optax.GradientTransformationExtraArgs
@@ -451,12 +487,14 @@ def train_step_integration(
         Current state of the optimizer.
     loss_func : LossFunction
         Loss function to optimize.
+    loss_weights : Optional[jax.Array], optional
+        Weights for each time point/step. Default: None.
     regularization : Optional[Literal["l1", "l2"]], optional
         Regularization method for the adjacency method. Options are "l1"
         and "l2". With the default, None, no regularization is applied.
     regularization_strength : float, optional
         Relative weight of the regularization term added to the loss if
-        `regularization` is not None. Default: 0.1.
+        `regularization` is not None. Default: 1e-4.
     key : Optional[jax.Array], optional
         Key for the random number generator. Required for integration
         with a GRNModelSDE. Default: None.
@@ -474,6 +512,7 @@ def train_step_integration(
         y,
         time_points,
         loss_func,
+        loss_weights=loss_weights,
         regularization=regularization,
         regularization_strength=regularization_strength,
         key=key,
@@ -493,6 +532,7 @@ def test(
     time_points: jax.Array,
     loss_func: LossFunction,
     key: Optional[jax.Array] = None,
+    loss_weights: Optional[jax.Array] = None,
     loss_kwargs: dict = {},
 ) -> jax.Array:
     """
@@ -504,7 +544,7 @@ def test(
     model : GRNModel
         The gene regulatory network model.
     y : jax.Array
-        Test sequences of shape (n_steps, n_obs, n_var).
+        Test sequences of shape (batch_size, n_steps, n_var).
     time_points : jax.Array
         Time points to use for integration.
     loss_func : LossFunction
@@ -512,6 +552,8 @@ def test(
     key : Optional[jax.Array], optional
         Key for the random number generator. Required for integration
         with a GRNModelSDE. Default: None.
+    loss_weights : Optional[jax.Array], optional
+        Weights for each time point/step. Default: None.
     loss_kwargs : dict, optional
         Additional keyword arguments for the loss function. Default: {}.
 
@@ -525,6 +567,7 @@ def test(
         y,
         time_points,
         loss_func,
+        loss_weights=loss_weights,
         regularization=None,
         key=key,
         loss_kwargs=loss_kwargs,
@@ -538,12 +581,15 @@ def train_integration(
     optimizer: optax.GradientTransformationExtraArgs,
     loss_func: LossFunction,
     key: jax.Array,
+    loss_weights: Optional[jax.Array] = None,
     regularization: Optional[Literal["l1", "l2"]] = None,
     regularization_strength: float = 1e-4,
     pruning_frequency: Optional[int] = 50,
     pruning_atol: float = 1e-3,
     pruning_rtol: float = 1e-3,
     train_proportion: float = 0.8,
+    test_proportion: float = 0.0,
+    time_point_split: bool = False,
     batch_size: Optional[int] = None,
     num_epochs: int = 1000,
     early_stopping: bool = True,
@@ -571,6 +617,8 @@ def train_integration(
         Loss function to optimize.
     key : jax.Array
         Key for the random number generator.
+    loss_weights : Optional[jax.Array], optional
+        Weights for each time point/step. Default: None.
     regularization : Optional[Literal["l1", "l2"]], optional
         Regularization method for the adjacency method. Options are "l1"
         and "l2". With the default, None, no regularization is applied.
@@ -587,6 +635,14 @@ def train_integration(
         Relative threshold for pruning edges close to 0. Default: 1e-3.
     train_proportion : float, optional
         Proportion of samples to use for training. Default: 0.8.
+    test_proportion : float, optional
+        Proportion of time points to use for testing of interpolation
+        performance. Only applicable if `time_point_split` is True. The
+        evaluation on the test time points is not done inside this
+        training loop. Default: 0.0.
+    time_point_split : bool, optional
+        Whether to split into training, validation, and optionally test
+        data by time point instead of by sample. Default: False.
     batch_size : Optional[int], optional
         Batch size. With the default None, all samples are used at once.
     num_epochs : int, optional
@@ -633,6 +689,9 @@ def train_integration(
         `checkpoint_dir` is not of type str or Path.
     ValueError
         An error is raised if `checkpoint` is larger than `num_epochs`.
+    NotImplementedError
+        An error is raised if splitting by time point is used with a
+        :class:`MarkovChainDataset`.
     """
     # Use logger passed to the function if applicable
     if logger is not None:
@@ -709,10 +768,71 @@ def train_integration(
         if pruning_frequency <= 0:
             raise ValueError("Parameter `pruning_frequency` must be positive.")
 
-    train_length = floor(len(dataset) * train_proportion)
-    trainset, testset = torch.utils.data.random_split(
-        dataset, [train_length, len(dataset) - train_length]
-    )
+    if loss_weights is not None:
+        if loss_weights.shape != (len(time_points),):
+            raise ValueError(
+                f"Incorrect shape of the loss weights: expected: ({len(time_points)},), actual: {loss_weights.shape}"
+            )
+
+    # Split the dataset into training and validation
+    if time_point_split:
+        if isinstance(dataset, MarkovChainDataset):
+            raise NotImplementedError(
+                "Splitting by time point not implemented for MarkovChainDataset."
+            )
+        validation_proportion = 1.0 - train_proportion - test_proportion
+        indices = split_by_time_point(
+            dataset,
+            train_proportion=train_proportion,
+            validation_proportion=validation_proportion,
+            test_proportion=test_proportion,
+        )
+        if len(indices) == 2:
+            train_indices, validation_indices = indices
+        else:
+            train_indices, validation_indices, test_indices = indices
+            log.info(
+                f"Indices of test time points (not used here, use externally "
+                f"to test interpolation performance): {test_indices}"
+            )
+        log.info(f"Indices of training time points: {train_indices}")
+        log.info(f"Indices of validation time points: {validation_indices}")
+
+        # Add t0 to validation indices to facilitate integration from y0
+        validation_indices = torch.cat(
+            [torch.tensor([0], dtype=torch.int), validation_indices]
+        )
+        trainset = PseudotimeTimepointWrapper(dataset, train_indices)
+        valset = PseudotimeTimepointWrapper(dataset, validation_indices)
+        train_time_points = jnp.asarray(trainset.time_points.numpy())
+        val_time_points = jnp.asarray(valset.time_points.numpy())
+
+        train_weights = None
+        val_weights = None
+        if loss_weights is not None:
+            train_weights = loss_weights[jnp.asarray(train_indices.numpy())]
+            # Ensure that y0 is not used for calculating the validation loss
+            val_weights = (
+                loss_weights[jnp.asarray(validation_indices.numpy())].at[0].set(0)
+            )
+            print(train_weights)
+            print(val_weights)
+
+    else:
+        if test_proportion > 0.0:
+            log.warning(
+                "For splitting by sample, a separate test set is not implemented. "
+                "If this is required, the dataset should be split by cells before training."
+            )
+        generator = torch.Generator().manual_seed(42)
+        train_length = floor(len(dataset) * train_proportion)
+        trainset, valset = torch.utils.data.random_split(
+            dataset, [train_length, len(dataset) - train_length], generator=generator
+        )
+        train_weights = loss_weights
+        val_weights = loss_weights
+        train_time_points = time_points
+        val_time_points = time_points
 
     # No batch size given: Use the whole dataset
     if batch_size is not None:
@@ -720,7 +840,7 @@ def train_integration(
         batch_size_test = batch_size
     else:
         batch_size_train = len(trainset)
-        batch_size_test = len(testset)
+        batch_size_test = len(valset)
     log.info(
         f"Batch size train: {batch_size_train}; batch size test: {batch_size_test}"
     )
@@ -732,7 +852,7 @@ def train_integration(
         num_workers=num_workers_loader,
     )
     testloader = torch.utils.data.DataLoader(
-        testset,
+        valset,
         batch_size=batch_size_test,
         shuffle=True,
         num_workers=num_workers_loader,
@@ -765,9 +885,10 @@ def train_integration(
                     optimizer=optimizer,
                     opt_state=opt_state,
                     loss_func=loss_func,
+                    loss_weights=train_weights,
                     regularization=regularization,
                     regularization_strength=regularization_strength,
-                    time_points=time_points,
+                    time_points=train_time_points,
                     key=sub_key,
                     loss_kwargs=loss_kwargs,
                 )
@@ -783,9 +904,10 @@ def train_integration(
                 loss = test(
                     model=model,
                     y=y,
-                    time_points=time_points,
+                    time_points=val_time_points,
                     loss_func=loss_func,
                     key=sub_key,
+                    loss_weights=val_weights,
                     loss_kwargs=loss_kwargs,
                 )
                 test_loss += loss.item()
