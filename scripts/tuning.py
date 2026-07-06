@@ -3,7 +3,6 @@ import logging
 import multiprocessing as mp
 import os
 from functools import partial
-from multiprocessing import Pool
 from pathlib import Path
 from typing import Literal, Optional
 
@@ -166,7 +165,6 @@ def objective(
 
 
 def run_optimization(
-    _,
     objective_func,
     out_dir: Path,
     study_name: str,
@@ -315,18 +313,6 @@ if __name__ == "__main__":
         "--n-trials", type=int, default=100, help="Number of trials for optuna tuning."
     )
     parser.add_argument(
-        "--n-trials-per-worker",
-        type=int,
-        default=2,
-        help="Number of trials to start on one worker.",
-    )
-    parser.add_argument(
-        "--n-jobs",
-        type=int,
-        default=1,
-        help="Number of parallel processes to run.",
-    )
-    parser.add_argument(
         "--seed",
         type=int,
         default=42,
@@ -376,38 +362,17 @@ if __name__ == "__main__":
     )
 
     # Run study
-    with Pool(processes=args.n_jobs) as pool:
-        pool.map(
-            partial(
-                run_optimization,
-                objective_func=objective_func,
-                out_dir=out_dir,
-                study_name=args.name,
-                dataset=args.input,
-                loss_func=args.loss_func,
-                weighted_loss=args.weighted_loss,
-                regularization=args.regularization,
-                regularization_strength=args.regularization_strength,
-                train_proportion=args.train_proportion,
-                test_proportion=args.test_proportion,
-                time_point_split=args.time_point_split,
-                n_trials=args.n_trials_per_worker,
-            ),
-            range(args.n_trials // args.n_trials_per_worker),
-        )
-
-    # Load finished study
-    study = optuna.load_study(
+    run_optimization(
+        objective_func=objective_func,
+        out_dir=out_dir,
         study_name=args.name,
-        storage=JournalStorage(JournalFileBackend(str(out_dir / "journal.log"))),
+        dataset=args.input,
+        loss_func=args.loss_func,
+        weighted_loss=args.weighted_loss,
+        regularization=args.regularization,
+        regularization_strength=args.regularization_strength,
+        train_proportion=args.train_proportion,
+        test_proportion=args.test_proportion,
+        time_point_split=args.time_point_split,
+        n_trials=args.n_trials,
     )
-
-    # Print and save results
-    print("Best parameters: ", study.best_params)
-    print("Best value: ", study.best_value)
-    print("Best trial: ", study.best_trial)
-    print("Number of trials: ", len(study.trials))
-    df: pd.DataFrame = study.trials_dataframe(
-        attrs=("number", "value", "params", "state")
-    )
-    df.to_csv(out_dir / "trials_dataframe.csv")
