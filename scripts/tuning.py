@@ -153,6 +153,7 @@ def objective(
         regularization=regularization,
         regularization_strength=regularization_strength,
         num_epochs=num_epochs,
+        patience=100,
         checkpoint="final",
         checkpoint_dir=checkpoint_dir,
         logger=logger,
