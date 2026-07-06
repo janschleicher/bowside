@@ -679,8 +679,8 @@ def train_integration(
     Returns
     -------
     Tuple[GRNModel, List[float], List[float], optax.OptState]
-        Trained model, train and test losses for every epoch, and final
-        state of the optimizer.
+        Trained model, train and validation losses for every epoch, and
+        final state of the optimizer.
 
     Raises
     ------
@@ -808,15 +808,13 @@ def train_integration(
         val_time_points = jnp.asarray(valset.time_points.numpy())
 
         train_weights = None
-        val_weights = None
+        val_weights = jnp.ones(len(val_time_points)).at[0].set(0)
         if loss_weights is not None:
             train_weights = loss_weights[jnp.asarray(train_indices.numpy())]
             # Ensure that y0 is not used for calculating the validation loss
             val_weights = (
                 loss_weights[jnp.asarray(validation_indices.numpy())].at[0].set(0)
             )
-            print(train_weights)
-            print(val_weights)
 
     else:
         if test_proportion > 0.0:
@@ -862,7 +860,7 @@ def train_integration(
     num_batches_train = len(trainloader)
     num_batches_test = len(testloader)
     train_losses: List[float] = []
-    test_losses: List[float] = []
+    val_losses: List[float] = []
     log.info(
         f"Number of training batches: {num_batches_train}; number of test batches: {num_batches_test}"
     )
@@ -897,7 +895,7 @@ def train_integration(
             train_losses.append(train_loss)
 
             # Evaluation
-            test_loss = 0.0
+            val_loss = 0.0
             for data in testloader:
                 key, sub_key = jax.random.split(key)
                 y = jnp.asarray(data.numpy().copy(), device=device)
@@ -910,12 +908,12 @@ def train_integration(
                     loss_weights=val_weights,
                     loss_kwargs=loss_kwargs,
                 )
-                test_loss += loss.item()
-            test_loss = test_loss / num_batches_test
-            test_losses.append(test_loss)
+                val_loss += loss.item()
+            val_loss = val_loss / num_batches_test
+            val_losses.append(val_loss)
 
             log.debug(
-                f"Epoch {epoch}: training loss: {train_loss}, test loss: {test_loss}"
+                f"Epoch {epoch}: training loss: {train_loss}, test loss: {val_loss}"
             )
 
             # Prune edges close to 0
@@ -931,13 +929,13 @@ def train_integration(
                     / f"checkpoint_e{epoch:0{floor(log10(num_epochs)) + 1}d}.eqx"
                 )
             elif checkpoint == "best":
-                if test_loss < best_test_loss:
+                if val_loss < best_test_loss:
                     model.save(checkpoint_dir / "checkpoint_best_model.eqx")
                     best_model_epoch = epoch
 
             # Check early stopping
             if early_stopping:
-                if early_stopping_instance.should_stop(test_loss):
+                if early_stopping_instance.should_stop(val_loss):
                     break
 
         log.info("Finished model training.")
@@ -951,11 +949,11 @@ def train_integration(
         if checkpoint is not None:
             model.save(checkpoint_dir / "checkpoint_final_model.eqx")
             np.save(checkpoint_dir / "train_losses.npy", np.asarray(train_losses))
-            np.save(checkpoint_dir / "test_losses.npy", np.asarray(test_losses))
+            np.save(checkpoint_dir / "test_losses.npy", np.asarray(val_losses))
             if checkpoint == "best":
                 log.info(
                     f"Best model was at epoch {best_model_epoch}, saved "
                     f"as {str(checkpoint_dir / 'checkpoint_best_model.eqx')}"
                 )
 
-        return model, train_losses, test_losses, opt_state
+        return model, train_losses, val_losses, opt_state
