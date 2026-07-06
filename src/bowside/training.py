@@ -19,6 +19,7 @@ from tqdm.contrib.logging import logging_redirect_tqdm
 
 from bowside.dataset import (
     MarkovChainDataset,
+    NumpyLoader,
     PseudotimeDataset,
     PseudotimeTimepointWrapper,
     split_by_time_point,
@@ -843,13 +844,13 @@ def train_integration(
         f"Batch size train: {batch_size_train}; batch size test: {batch_size_test}"
     )
 
-    trainloader = torch.utils.data.DataLoader(
+    trainloader = NumpyLoader(
         trainset,
         batch_size=batch_size_train,
         shuffle=True,
         num_workers=num_workers_loader,
     )
-    testloader = torch.utils.data.DataLoader(
+    testloader = NumpyLoader(
         valset,
         batch_size=batch_size_test,
         shuffle=True,
@@ -876,7 +877,7 @@ def train_integration(
             train_loss = 0.0
             for data in trainloader:
                 key, sub_key = jax.random.split(key)
-                y = jnp.asarray(data.numpy().copy(), device=device)
+                y = jax.device_put(data, device=device)
                 loss, model, opt_state = train_step_integration(
                     model=model,
                     y=y,
@@ -898,7 +899,7 @@ def train_integration(
             val_loss = 0.0
             for data in testloader:
                 key, sub_key = jax.random.split(key)
-                y = jnp.asarray(data.numpy().copy(), device=device)
+                y = jax.device_put(data, device=device)
                 loss = test(
                     model=model,
                     y=y,

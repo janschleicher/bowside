@@ -1,6 +1,6 @@
 """Module for datasets to be used to train an ODE GRN model."""
 
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from math import floor
 from typing import Optional, Tuple, Union
 
@@ -10,9 +10,10 @@ import numpy as np
 import pandas as pd
 import torch
 from jax import numpy as jnp
+from jax.tree_util import tree_map
 from numpy.typing import NDArray
 from scipy import sparse
-from torch.utils.data import Dataset
+from torch.utils.data import DataLoader, Dataset, Sampler, default_collate
 
 from bowside.model import BifurcatingSDE
 from bowside.sampling import MarkovSampler
@@ -489,3 +490,39 @@ class PseudotimeTimepointWrapper(Dataset):
 
     def n_genes(self) -> int:
         return self.dataset.n_genes()
+
+
+def numpy_collate(batch):
+    """Collate function to convert a batch of PyTorch data into NumPy arrays."""
+    return tree_map(np.asarray, default_collate(batch))
+
+
+class NumpyLoader(DataLoader):
+    """Custom DataLoader to return NumPy arrays from a PyTorch Dataset."""
+
+    def __init__(
+        self,
+        dataset: Dataset,
+        batch_size: Optional[int] = 1,
+        shuffle: Optional[bool] = False,
+        sampler: Optional[Union[Sampler, Iterable]] = None,
+        batch_sampler: Optional[Union[Sampler[list], Iterable[list]]] = None,
+        num_workers: int = 0,
+        pin_memory: bool = False,
+        drop_last: bool = False,
+        timeout: float = 0,
+        worker_init_fn=None,
+    ):
+        super(self.__class__, self).__init__(
+            dataset,
+            batch_size=batch_size,
+            shuffle=shuffle,
+            sampler=sampler,
+            batch_sampler=batch_sampler,
+            num_workers=num_workers,
+            collate_fn=numpy_collate,
+            pin_memory=pin_memory,
+            drop_last=drop_last,
+            timeout=timeout,
+            worker_init_fn=worker_init_fn,
+        )
