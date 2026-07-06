@@ -15,7 +15,7 @@ from optuna.storages.journal import JournalFileBackend
 
 from bowside.dataset import PseudotimeDataset
 from bowside.model import GRNModelSDE
-from bowside.training import mse_loss, qqloss, train_integration
+from bowside.training import mse_loss, qqloss, sinkhorn_loss, train_integration
 
 os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
 
@@ -135,7 +135,9 @@ def objective(
     weight = None
     if weighted_loss:
         weight = jnp.sqrt(jnp.linspace(0.0, 10.0**2, dataset.time_points.size(0)))
-    if loss_func == "qqloss":
+    if loss_func == "sinkhorn":
+        loss_fn = sinkhorn_loss
+    elif loss_func == "qqloss":
         loss_fn = partial(qqloss, metric=mse_loss, dim=0, n_quantiles=100)
 
     _, _, val_losses, _ = train_integration(
