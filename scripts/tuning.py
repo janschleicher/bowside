@@ -16,7 +16,7 @@ from optuna.storages.journal import JournalFileBackend
 
 from bowside.dataset import PseudotimeDataset
 from bowside.model import GRNModelSDE
-from bowside.training import mse_loss, qqloss, sinkhorn_loss, train_integration
+from bowside.training import mse_loss, qqloss, train_integration
 
 os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
 
@@ -34,6 +34,9 @@ def objective(
     weighted_loss: bool,
     regularization: Optional[Literal["l1", "l2"]],
     regularization_strength: Optional[float],
+    train_proportion: float,
+    test_proportion: float,
+    time_point_split: bool,
     seed: int,
 ):
     import diffrax
@@ -133,25 +136,21 @@ def objective(
     weight = None
     if weighted_loss:
         weight = jnp.sqrt(jnp.linspace(0.0, 10.0**2, dataset.time_points.size(0)))
-    if loss_func == "sinkhorn":
-        loss_fn = partial(sinkhorn_loss, weight=weight)
-    elif loss_func == "qqloss":
-        loss_fn = partial(
-            qqloss,
-            metric=mse_loss,
-            dim=0,
-            n_quantiles=100,
-            weight=weight,
-        )
+    if loss_func == "qqloss":
+        loss_fn = partial(qqloss, metric=mse_loss, dim=0, n_quantiles=100)
 
-    _, _, test_losses, _ = train_integration(
+    _, _, val_losses, _ = train_integration(
         dataset,
         model,
         optimizer,
         loss_fn,
         key_train,
+        loss_weights=weight,
         regularization=regularization,
         regularization_strength=regularization_strength,
+        train_proportion=train_proportion,
+        test_proportion=test_proportion,
+        time_point_split=time_point_split,
         num_epochs=num_epochs,
         patience=100,
         checkpoint="final",
@@ -159,11 +158,11 @@ def objective(
         logger=logger,
     )
 
-    logger.info(f"Final test loss: {test_losses[-1]}")
+    logger.info(f"Final validation loss: {val_losses[-1]}")
     file_handler.flush()
     logger.removeHandler(file_handler)
     file_handler.close()
-    return test_losses[-1]
+    return val_losses[-1]
 
 
 def run_optimization(
@@ -176,6 +175,9 @@ def run_optimization(
     weighted_loss: bool,
     regularization: Optional[Literal["l1", "l2"]],
     regularization_strength: Optional[float],
+    train_proportion: float,
+    test_proportion: float,
+    time_point_split: bool,
     n_trials: int,
 ):
     study = optuna.create_study(
@@ -190,6 +192,12 @@ def run_optimization(
     study.set_user_attr("weighted_loss", str(weighted_loss))
     study.set_user_attr("regularization", regularization)
     study.set_user_attr("regularization_strength", regularization_strength)
+    study.set_user_attr("train_proportion", train_proportion)
+    study.set_user_attr(
+        "validation_proportion", 1.0 - train_proportion - test_proportion
+    )
+    study.set_user_attr("test_proportion", test_proportion)
+    study.set_user_attr("time_point_split", str(time_point_split))
     study.optimize(objective_func, n_trials=n_trials)
 
 
@@ -270,6 +278,25 @@ if __name__ == "__main__":
         "the importance of later time points.",
     )
     parser.add_argument(
+        "--train-proportion",
+        type=float,
+        default=0.8,
+        help="Proportion of samples/time points to use for training.",
+    )
+    parser.add_argument(
+        "--test-proportion",
+        type=float,
+        default=0.0,
+        help="Proportion of time points to use for interpolation testing. "
+        "This can only be used when splitting by time point, and the "
+        "corresponding evaluation must be done externally.",
+    )
+    parser.add_argument(
+        "--time-point-split",
+        action="store_true",
+        help="Split the dataset into train, validation, and optionally test by time point.",
+    )
+    parser.add_argument(
         "--regularization",
         type=str,
         choices=["l1", "l2"],
@@ -342,6 +369,9 @@ if __name__ == "__main__":
         weighted_loss=args.weighted_loss,
         regularization=args.regularization,
         regularization_strength=args.regularization_strength,
+        train_proportion=args.train_proportion,
+        test_proportion=args.test_proportion,
+        time_point_split=args.time_point_split,
         seed=args.seed,
     )
 
@@ -358,6 +388,9 @@ if __name__ == "__main__":
                 weighted_loss=args.weighted_loss,
                 regularization=args.regularization,
                 regularization_strength=args.regularization_strength,
+                train_proportion=args.train_proportion,
+                test_proportion=args.test_proportion,
+                time_point_split=args.time_point_split,
                 n_trials=args.n_trials_per_worker,
             ),
             range(args.n_trials // args.n_trials_per_worker),
