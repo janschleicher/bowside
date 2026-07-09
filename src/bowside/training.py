@@ -252,14 +252,15 @@ def qqloss(
     return metric(pred, jnp.quantile(y_true, quantiles, axis=dim), weight=weight)
 
 
-@jax.jit(static_argnames=["batch_size"])
+@eqx.filter_jit
 def sinkhorn_loss(
     y_pred: jax.Array,
     y_true: jax.Array,
     p: int = 2,
     batch_size: Optional[int] = None,
     blur: float = 0.1,
-    decay: float = 0.7,
+    scaling: float = 0.7,
+    init_eps: float = 5.0,
     weight: Optional[jax.Array] = None,
 ) -> jax.Array:
     """
@@ -287,9 +288,12 @@ def sinkhorn_loss(
     blur : float, optional
         Entropic regularization strength. Epsilon is calculated as
         blur to the power of `p`. Default: 0.1.
-    decay : float, optional
+    scaling : float, optional
         Ratio between successive values in the epsilon schedule.
         Default: 0.7.
+    init_eps : float, optional
+        Multiple of the final value of epsilon to use at the start of
+        the epsilon schedule. Default: 5.0.
     weight : Optional[jax.Array], optional
         Weights for each sample. Default: None.
 
@@ -309,13 +313,16 @@ def sinkhorn_loss(
     cost_fn = costs.EuclideanP(p)
 
     epsilon = blur**p
+    decay = scaling**p
 
     def sinkhorn_loss_one(x: jax.Array, y: jax.Array):
         div, _ = sinkhorn_divergence.sinkhorn_divergence(
             pointcloud.PointCloud,
             x,
             y,
-            epsilon=epsilon_scheduler.Epsilon(target=epsilon, decay=decay),
+            epsilon=epsilon_scheduler.Epsilon(
+                init=init_eps, target=epsilon, decay=decay
+            ),
             cost_fn=cost_fn,
             batch_size=batch_size,
         )
