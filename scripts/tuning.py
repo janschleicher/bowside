@@ -3,9 +3,9 @@ import logging
 from functools import partial
 from multiprocessing import Pool
 from pathlib import Path
+from typing import Literal, Optional
 
 import networkx as nx
-import numpy as np
 import optuna
 import pandas as pd
 import scanpy as sc
@@ -30,10 +30,16 @@ def objective(
     layer: str,
     mask_var: str,
     pseudotime_key: str,
-    adj_list: pd.DataFrame,
+    adj_list: Optional[pd.DataFrame],
     dt: float,
     loss_func: str,
     weighted_loss: bool,
+    regularization: Optional[Literal["l1", "l2"]],
+    regularization_strength: Optional[float],
+    train_proportion: float,
+    test_proportion: float,
+    time_point_split: bool,
+    patience: int,
 ):
     # Setup per-trial logger
     checkpoint_dir = out_dir / str(trial.number)
@@ -44,7 +50,7 @@ def objective(
         "[%(asctime)s][%(name)s][%(levelname)s] - %(message)s", "%Y-%m-%d %H:%M:%S"
     )
     file_handler.setFormatter(formatter)
-    # Attach handler to sc_markov_ode.training logger
+    # Attach handler to bowside.training logger
     logger = logging.getLogger(f"optuna_trial_{trial.number}")
     logger.addHandler(file_handler)
     logger.setLevel(logging.INFO)
@@ -74,21 +80,27 @@ def objective(
         raise optuna.TrialPruned("Cannot use fixed, gene-wise sigma.")
 
     # Model setup
-    adj_list = adj_list[
-        (adj_list.source.isin(dataset.gene_names))
-        & (adj_list.target.isin(dataset.gene_names))
-    ]
-    grn = nx.from_pandas_edgelist(
-        adj_list, source="source", target="target", create_using=nx.DiGraph
-    )
-    for gene in dataset.gene_names:
-        if gene not in grn.nodes():
-            grn.add_node(gene)
+    adj = None
+    if adj_list is not None:
+        adj_list = adj_list[
+            (adj_list.source.isin(dataset.gene_names))
+            & (adj_list.target.isin(dataset.gene_names))
+        ]
+        grn = nx.from_pandas_edgelist(
+            adj_list, source="source", target="target", create_using=nx.DiGraph
+        )
+        for gene in dataset.gene_names:
+            if gene not in grn.nodes():
+                grn.add_node(gene)
+        adj = torch.from_numpy(nx.to_numpy_array(grn, nodelist=dataset.gene_names))
+
+    # Training parameters
+    num_epochs = trial.suggest_int("num_epochs", low=500, high=5000, step=500)
+    solver_method = trial.suggest_categorical("solver_method", ["Euler", "ItoMilstein"])
+
     model = GRNModelSDE(
         dataset.n_genes(),
-        adj=torch.from_numpy(
-            nx.to_numpy_array(grn, nodelist=dataset.gene_names).astype(np.float32)
-        ),
+        adj=adj,
         adj_init_normal=adj_init_normal,
         sigma=sigma,
         shared_sigma=shared_sigma,
@@ -105,28 +117,42 @@ def objective(
     num_epochs = trial.suggest_int("num_epochs", low=500, high=5000, step=500)
     solver_method = trial.suggest_categorical("solver_method", ["euler", "milstein"])
 
+    # Regularization
+    if regularization is not None:
+        if regularization_strength is None:
+            regularization_strength = trial.suggest_float(
+                "regularization_strength", 1e-6, 1e-2, log=True
+            )
+    else:
+        regularization_strength = (
+            0.0001  # not used, but necessary for calling the function
+        )
+
     # Training
     weight = None
     if weighted_loss:
         weight = torch.sqrt(torch.linspace(0.0, 10.0**2, dataset.time_points.size(0)))
     if loss_func == "sinkhorn":
-        loss_fn = partial(sinkhorn_loss, weight=weight)
+        loss_fn = sinkhorn_loss
     elif loss_func == "qqloss":
         loss_fn = partial(
-            qqloss,
-            metric=torch.nn.functional.mse_loss,
-            dim=1,
-            n_quantiles=100,
-            weight=weight,
+            qqloss, metric=torch.nn.functional.mse_loss, dim=1, n_quantiles=100
         )
 
     try:
-        _, test_losses = train_integration(
+        _, val_losses = train_integration(
             dataset,
             model,
             optimizer,
             loss_fn,
+            loss_weights=weight,
+            regularization=regularization,
+            regularization_strength=regularization_strength,
+            train_proportion=train_proportion,
+            test_proportion=test_proportion,
+            time_point_split=time_point_split,
             num_epochs=num_epochs,
+            patience=patience,
             solver_method=solver_method,
             dt=dt,
             atol=1e-9,
@@ -144,11 +170,11 @@ def objective(
         else:
             raise e
 
-    logger.info(f"Final test loss: {test_losses[-1]}")
+    logger.info(f"Final validation loss: {val_losses[-1]}")
     file_handler.flush()
     logger.removeHandler(file_handler)
     file_handler.close()
-    return test_losses[-1]
+    return val_losses[-1]
 
 
 def run_optimization(
@@ -159,6 +185,11 @@ def run_optimization(
     dataset: str,
     loss_func: str,
     weighted_loss: bool,
+    regularization: Optional[Literal["l1", "l2"]],
+    regularization_strength: Optional[float],
+    train_proportion: float,
+    test_proportion: float,
+    time_point_split: bool,
     n_trials: int,
 ):
     study = optuna.create_study(
@@ -171,6 +202,14 @@ def run_optimization(
     study.set_user_attr("dataset", dataset)
     study.set_user_attr("loss_function", loss_func)
     study.set_user_attr("weighted_loss", str(weighted_loss))
+    study.set_user_attr("regularization", regularization)
+    study.set_user_attr("regularization_strength", regularization_strength)
+    study.set_user_attr("train_proportion", train_proportion)
+    study.set_user_attr(
+        "validation_proportion", 1.0 - train_proportion - test_proportion
+    )
+    study.set_user_attr("test_proportion", test_proportion)
+    study.set_user_attr("time_point_split", str(time_point_split))
     study.optimize(objective_func, n_trials=n_trials)
 
 
@@ -200,6 +239,8 @@ if __name__ == "__main__":
         "--adj-file",
         type=str,
         help="CSV file containg the adjacency list for initialization.",
+        required=False,
+        default=None,
     )
     parser.add_argument(
         "--adj-source-col",
@@ -249,33 +290,66 @@ if __name__ == "__main__":
         "the importance of later time points.",
     )
     parser.add_argument(
+        "--train-proportion",
+        type=float,
+        default=0.8,
+        help="Proportion of samples/time points to use for training.",
+    )
+    parser.add_argument(
+        "--test-proportion",
+        type=float,
+        default=0.0,
+        help="Proportion of time points to use for interpolation testing. "
+        "This can only be used when splitting by time point, and the "
+        "corresponding evaluation must be done externally.",
+    )
+    parser.add_argument(
+        "--time-point-split",
+        action="store_true",
+        help="Split the dataset into train, validation, and optionally test by time point.",
+    )
+    parser.add_argument(
+        "--regularization",
+        type=str,
+        choices=["l1", "l2"],
+        required=False,
+        default=None,
+        help="Regularization of adjacency matrix weights.",
+    )
+    parser.add_argument(
+        "--regularization-strength",
+        type=float,
+        required=False,
+        default=None,
+        help="Adjacency matrix regularization strength. With the default `None`, treated as hyperparameter.",
+    )
+    parser.add_argument(
+        "--patience",
+        type=int,
+        required=False,
+        default=100,
+        help="Patience for early stopping.",
+    )
+    parser.add_argument(
         "--n-trials", type=int, default=100, help="Number of trials for optuna tuning."
-    )
-    parser.add_argument(
-        "--n-trials-per-worker",
-        type=int,
-        default=2,
-        help="Number of trials to start on one worker.",
-    )
-    parser.add_argument(
-        "--n-jobs",
-        type=int,
-        default=1,
-        help="Number of parallel processes to run.",
     )
     args = parser.parse_args()
 
     # Load and filter adjacency list
-    adj_list = pd.read_csv(args.adj_file)
-    if args.adj_filter_col is not None:
-        if args.adj_filter_value is None:
-            adj_list = adj_list[adj_list[args.adj_filter_col]]  # Assume boolean
-        else:
-            adj_list = adj_list[adj_list[args.adj_filter_col] == args.adj_filter_value]
-    adj_list = adj_list.rename(
-        columns={args.adj_source_col: "source", args.adj_target_col: "target"}
-    )
-    adj_list = adj_list[["source", "target"]]
+    adj_list = None
+    if args.adj_file is not None:
+        adj_list = pd.read_csv(args.adj_file)
+        if args.adj_filter_col is not None:
+            if args.adj_filter_value is None:
+                adj_list = adj_list[adj_list[args.adj_filter_col]]  # Assume boolean
+            else:
+                adj_list = adj_list[
+                    adj_list[args.adj_filter_col] == args.adj_filter_value
+                ]
+        adj_list = adj_list.rename(
+            columns={args.adj_source_col: "source", args.adj_target_col: "target"}
+        )
+        adj_list = adj_list[["source", "target"]]
 
     out_dir = Path(args.output)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -292,6 +366,12 @@ if __name__ == "__main__":
         dt=args.dt,
         loss_func=args.loss_func,
         weighted_loss=args.weighted_loss,
+        regularization=args.regularization,
+        regularization_strength=args.regularization_strength,
+        train_proportion=args.train_proportion,
+        test_proportion=args.test_proportion,
+        time_point_split=args.time_point_split,
+        patience=args.patience,
     )
 
     # Run study
@@ -305,6 +385,11 @@ if __name__ == "__main__":
                 dataset=args.input,
                 loss_func=args.loss_func,
                 weighted_loss=args.weighted_loss,
+                regularization=args.regularization,
+                regularization_strength=args.regularization_strength,
+                train_proportion=args.train_proportion,
+                test_proportion=args.test_proportion,
+                time_point_split=args.time_point_split,
                 n_trials=args.n_trials_per_worker,
             ),
             range(args.n_trials // args.n_trials_per_worker),
