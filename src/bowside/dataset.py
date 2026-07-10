@@ -1,6 +1,7 @@
 """Module for datasets to be used to train an ODE GRN model."""
 
 from collections.abc import Sequence
+from math import floor
 from typing import Optional, Tuple, Union
 
 import anndata as ad
@@ -388,3 +389,103 @@ class BifurcatingPseudotimeDataset(PseudotimeDataset):
         self.adata = ad.AnnData(
             X=self.X.detach().cpu().numpy(), var=pd.DataFrame(index=self.gene_names)
         )
+
+
+def split_by_time_point(
+    dataset: PseudotimeDataset,
+    train_proportion: float = 0.8,
+    validation_proportion: float = 0.2,
+    test_proportion: float = 0.0,
+) -> Union[
+    Tuple[torch.Tensor, torch.Tensor], Tuple[torch.Tensor, torch.Tensor, torch.Tensor]
+]:
+    """
+    Split the dataset by time points. The validation time points are
+    taken from the end, the test time points from the middle of the
+    remaining time points. By default, only training and validation
+    indices are generated.
+
+    Parameters
+    ----------
+    dataset : PseudotimeDataset
+        Dataset that should be split.
+    train_proportion : float, optional
+        Proportion of timepoints for training. Default: 0.8.
+    validation_proportion : float, optional
+        Proportion of timepoints for validation. Default: 0.2.
+    test_proportion : float, optional
+        Proportion of timepoints for testing. Default: 0.0.
+
+    Returns
+    -------
+    Union[ Tuple[torch.Tensor, torch.Tensor], Tuple[torch.Tensor, torch.Tensor, torch.Tensor] ]
+        Indices of the training, validation, and (optionally) test
+        timepoints.
+
+    Raises
+    ------
+    ValueError
+        An error is raised if one of the proportions is not in the
+        appropriate range, or if they do not sum to 1.
+    """
+    if not np.isclose(train_proportion + validation_proportion + test_proportion, 1.0):
+        raise ValueError("Proportions must sum up to 1.")
+
+    if train_proportion <= 0.0 or train_proportion >= 1.0:
+        raise ValueError(
+            f"Training proportion must be in (0, 1), but was {train_proportion}."
+        )
+    if validation_proportion <= 0.0 or validation_proportion >= 1.0:
+        raise ValueError(
+            f"Validation proportion must be in (0, 1), but was {validation_proportion}."
+        )
+    if test_proportion < 0.0 or test_proportion >= 1.0:
+        raise ValueError(
+            f"Test proportion must be in [0, 1), but was {test_proportion}."
+        )
+
+    n_time_points = len(dataset.time_points)
+    all_indices = torch.arange(n_time_points)
+
+    # Take validation time points from the end
+    n_validation = floor(validation_proportion * n_time_points)
+    validation_indices = all_indices[-n_validation:]
+
+    train_indices = all_indices[:-n_validation]
+
+    # To test model performance based on interpolation, take time points
+    # from the middle of the remaining time points
+    if test_proportion > 0:
+        n_test = floor(test_proportion * n_time_points)
+        test_start_idx = ((n_time_points - n_validation) // 2) - (n_test // 2)
+        test_indices = all_indices[test_start_idx : test_start_idx + n_test]
+        train_indices = torch.tensor(
+            [idx for idx in train_indices if idx not in test_indices]
+        )
+        return train_indices, validation_indices, test_indices
+    return train_indices, validation_indices
+
+
+class PseudotimeTimepointWrapper(Dataset):
+    def __init__(self, dataset: PseudotimeDataset, timepoint_indices: torch.Tensor):
+        self.dataset = dataset
+        self.time_point_indices = timepoint_indices
+        self.time_points = dataset.time_points[self.time_point_indices]
+
+    def __len__(self):
+        return len(self.dataset)
+
+    def __getitem__(self, idx):
+        sample = self.dataset[idx]
+        if sample.dim() == 2:
+            sliced_sample = sample[self.time_point_indices, :]
+        elif sample.dim() == 3:
+            sliced_sample = sample[:, self.time_point_indices, :]
+        else:
+            raise ValueError(
+                f"Unexpected tensor shape from underlying dataset: {sample.shape}"
+            )
+        return sliced_sample
+
+    def n_genes(self) -> int:
+        return self.dataset.n_genes()

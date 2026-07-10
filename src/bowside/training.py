@@ -16,7 +16,12 @@ from torchsde import sdeint, sdeint_adjoint
 from tqdm.auto import tqdm
 from tqdm.contrib.logging import logging_redirect_tqdm
 
-from bowside.dataset import MarkovChainDataset, PseudotimeDataset
+from bowside.dataset import (
+    MarkovChainDataset,
+    PseudotimeDataset,
+    PseudotimeTimepointWrapper,
+    split_by_time_point,
+)
 from bowside.model import GRNModel, GRNModelSDE
 
 
@@ -532,12 +537,15 @@ def train_integration(
     model: GRNModel,
     optimizer: torch.optim.Optimizer,
     loss_func: LossFunction,
+    loss_weights: Optional[torch.Tensor] = None,
     regularization: Optional[Literal["l1", "l2"]] = None,
     regularization_strength: float = 1e-4,
     pruning_frequency: Optional[int] = 50,
     pruning_atol: float = 1e-3,
     pruning_rtol: float = 1e-3,
     train_proportion: float = 0.8,
+    test_proportion: float = 0.0,
+    time_point_split: bool = False,
     batch_size: Optional[int] = None,
     num_epochs: int = 1000,
     early_stopping: bool = True,
@@ -571,6 +579,8 @@ def train_integration(
         PyTorch optimizer for model training.
     loss_func : LossFunction
         Loss function to optimize.
+    loss_weights : Optional[torch.Tensor], optional
+        Weights for each time point/step. Default: None.
     regularization : Optional[Literal["l1", "l2"]], optional
         Regularization method for the adjacency method. Options are "l1"
         and "l2". With the default, None, no regularization is applied.
@@ -587,6 +597,14 @@ def train_integration(
         Relative threshold for pruning edges close to 0. Default: 1e-3.
     train_proportion : float, optional
         Proportion of samples to use for training. Default: 0.8.
+    test_proportion : float, optional
+        Proportion of time points to use for testing of interpolation
+        performance. Only applicable if `time_point_split` is True. The
+        evaluation on the test time points is not done inside this
+        training loop. Default: 0.0.
+    time_point_split : bool, optional
+        Whether to split into training, validation, and optionally test
+        data by time point instead of by sample. Default: False.
     batch_size : Optional[int], optional
         Batch size. With the default None, all samples are used at once.
     num_epochs : int, optional
@@ -710,7 +728,10 @@ def train_integration(
     time_points = None
     if isinstance(dataset, PseudotimeDataset):
         time_points = dataset.time_points
-    elif not isinstance(dataset, MarkovChainDataset):
+        n_time_points = len(time_points)
+    elif isinstance(dataset, MarkovChainDataset):
+        n_time_points = dataset.markov_chains.shape[1]
+    else:
         raise TypeError(
             "Incompatible dataset type. Use `MarkovChainDataset` or `PseudotimeDataset`."
         )
@@ -730,21 +751,84 @@ def train_integration(
         if pruning_frequency <= 0:
             raise ValueError("Parameter `pruning_frequency` must be positive.")
 
-    train_length = floor(len(dataset) * train_proportion)
-    trainset, testset = torch.utils.data.random_split(
-        dataset, [train_length, len(dataset) - train_length]
-    )
+    if loss_weights is not None:
+        if loss_weights.shape != (n_time_points,):
+            raise ValueError(
+                f"Incorrect shape of the loss weights: expected: ({n_time_points},), actual: {loss_weights.shape}"
+            )
+
+    # Split the dataset into training and validation
+    if time_point_split:
+        if isinstance(dataset, MarkovChainDataset):
+            raise NotImplementedError(
+                "Splitting by time point not implemented for MarkovChainDataset."
+            )
+        validation_proportion = 1.0 - train_proportion - test_proportion
+        indices = split_by_time_point(
+            dataset,
+            train_proportion=train_proportion,
+            validation_proportion=validation_proportion,
+            test_proportion=test_proportion,
+        )
+        if len(indices) == 2:
+            train_indices, validation_indices = indices
+        else:
+            train_indices, validation_indices, test_indices = indices
+            log.info(
+                f"Indices of test time points (not used here, use externally "
+                f"to test interpolation performance): {test_indices}"
+            )
+        log.info(f"Indices of training time points: {train_indices}")
+        log.info(f"Indices of validation time points: {validation_indices}")
+
+        # Add t0 to validation indices to facilitate integration from y0
+        validation_indices = torch.cat(
+            [torch.tensor([0], dtype=torch.int), validation_indices]
+        )
+        trainset = PseudotimeTimepointWrapper(dataset, train_indices)
+        valset = PseudotimeTimepointWrapper(dataset, validation_indices)
+        train_time_points = trainset.time_points
+        val_time_points = valset.time_points
+
+        train_weights = None
+        val_weights = torch.ones(len(val_time_points))
+        if loss_weights is not None:
+            train_weights = loss_weights[train_indices.numpy()]
+            # Ensure that y0 is not used for calculating the validation loss
+            val_weights = loss_weights[validation_indices.numpy()]
+
+        val_weights[0] = 0
+
+    else:
+        if test_proportion > 0.0:
+            log.warning(
+                "For splitting by sample, a separate test set is not implemented. "
+                "If this is required, the dataset should be split by cells before training."
+            )
+        generator = torch.Generator().manual_seed(42)
+        train_length = floor(len(dataset) * train_proportion)
+        trainset, valset = torch.utils.data.random_split(
+            dataset, [train_length, len(dataset) - train_length], generator=generator
+        )
+        train_weights = loss_weights
+        val_weights = loss_weights
+        train_time_points = time_points
+        val_time_points = time_points
+
+    train_loss_kwargs = loss_kwargs.copy()
+    train_loss_kwargs["weight"] = train_weights
+
+    val_loss_kwargs = loss_kwargs.copy()
+    val_loss_kwargs["weight"] = val_weights
 
     # No batch size given: Use the whole dataset
     if batch_size is not None:
         batch_size_train = batch_size
-        batch_size_test = batch_size
+        batch_size_val = batch_size
     else:
         batch_size_train = len(trainset)
-        batch_size_test = len(testset)
-    log.info(
-        f"Batch size train: {batch_size_train}; batch size test: {batch_size_test}"
-    )
+        batch_size_val = len(valset)
+    log.info(f"Batch size train: {batch_size_train}; batch size test: {batch_size_val}")
 
     trainloader = torch.utils.data.DataLoader(
         trainset,
@@ -753,8 +837,8 @@ def train_integration(
         num_workers=num_workers_loader,
     )
     testloader = torch.utils.data.DataLoader(
-        testset,
-        batch_size=batch_size_test,
+        valset,
+        batch_size=batch_size_val,
         shuffle=True,
         num_workers=num_workers_loader,
     )
@@ -763,7 +847,7 @@ def train_integration(
     num_batches_train = len(trainloader)
     num_batches_test = len(testloader)
     train_losses: List[float] = []
-    test_losses: List[float] = []
+    val_losses: List[float] = []
     log.info(
         f"Number of training batches: {num_batches_train}; number of test batches: {num_batches_test}"
     )
@@ -792,7 +876,7 @@ def train_integration(
                     loss_func=loss_func,
                     regularization=regularization,
                     regularization_strength=regularization_strength,
-                    time_points=time_points,
+                    time_points=train_time_points,
                     adjoint=adjoint,
                     solver_method=solver_method,
                     dt=dt,
@@ -800,31 +884,31 @@ def train_integration(
                     rtol=rtol,
                     adjoint_atol=adjoint_atol,
                     adjoint_rtol=adjoint_rtol,
-                    loss_kwargs=loss_kwargs,
+                    loss_kwargs=train_loss_kwargs,
                 )
             train_loss = train_loss / num_batches_train
             train_losses.append(train_loss)
 
             # Evaluation
-            test_loss = 0.0
+            val_loss = 0.0
             for data in testloader:
                 y = data.to(device)
-                test_loss += test(
+                val_loss += test(
                     y=y,
                     model=model,
                     loss_func=loss_func,
-                    time_points=time_points,
+                    time_points=val_time_points,
                     solver_method=solver_method,
                     dt=dt,
                     atol=atol,
                     rtol=rtol,
-                    loss_kwargs=loss_kwargs,
+                    loss_kwargs=val_loss_kwargs,
                 )
-            test_loss = test_loss / num_batches_test
-            test_losses.append(test_loss)
+            val_loss = val_loss / num_batches_test
+            val_losses.append(val_loss)
 
             log.debug(
-                f"Epoch {epoch}: training loss: {train_loss}, test loss: {test_loss}"
+                f"Epoch {epoch}: training loss: {train_loss}, val loss: {val_loss}"
             )
 
             # Prune edges close to 0
@@ -840,19 +924,19 @@ def train_integration(
                         "model_state_dict": model.state_dict(),
                         "optimizer_state_dict": optimizer.state_dict(),
                         "train_loss": train_loss,
-                        "test_loss": test_loss,
+                        "val_loss": val_loss,
                     },
                     checkpoint_dir
                     / f"checkpoint_e{epoch:0{floor(log10(num_epochs)) + 1}d}.tar",
                 )
             elif checkpoint == "best":
-                if compare(test_loss, best_test_loss):
+                if compare(val_loss, best_test_loss):
                     torch.save(
                         {
                             "model_state_dict": model.state_dict(),
                             "optimizer_state_dict": optimizer.state_dict(),
                             "train_loss": train_loss,
-                            "test_loss": test_loss,
+                            "val_loss": val_loss,
                         },
                         checkpoint_dir / "checkpoint_best_model.tar",
                     )
@@ -860,7 +944,7 @@ def train_integration(
 
             # Check early stopping
             if early_stopping:
-                if early_stopping_instance.should_stop(test_loss):
+                if early_stopping_instance.should_stop(val_loss):
                     break
 
         log.info("Finished model training.")
@@ -877,7 +961,7 @@ def train_integration(
                     "model_state_dict": model.state_dict(),
                     "optimizer_state_dict": optimizer.state_dict(),
                     "train_loss": train_loss,
-                    "test_loss": test_loss,
+                    "val_loss": val_loss,
                 },
                 checkpoint_dir / "checkpoint_final_model.tar",
             )
@@ -887,4 +971,4 @@ def train_integration(
                     f"as {str(checkpoint_dir / 'checkpoint_best_model.tar')}"
                 )
 
-        return train_losses, test_losses
+        return train_losses, val_losses
