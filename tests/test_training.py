@@ -11,7 +11,11 @@ import scanpy as sc
 import scvelo as scv
 import torch
 
-from bowside.dataset import MarkovChainDataset, PseudotimeDataset
+from bowside.dataset import (
+    BifurcatingPseudotimeDataset,
+    MarkovChainDataset,
+    PseudotimeDataset,
+)
 from bowside.model import GRNModel, GRNModelSDE
 from bowside.training import (
     EarlyStopping,
@@ -21,6 +25,8 @@ from bowside.training import (
     train_integration,
 )
 from tests.conftest import TEST_DATA_PATH
+
+IN_GITHUB_ACTIONS = os.getenv("GITHUB_ACTIONS") == "true"
 
 torch.manual_seed(42)
 
@@ -177,6 +183,39 @@ def test_loss_pseudotime_data(
     )
     assert torch.isclose(loss_val, torch.tensor(0, dtype=loss_val.dtype), atol=1e-4), (
         f"Loss value should be zero, but is {loss_val.item():.4g}."
+    )
+
+
+@pytest.mark.skipif(IN_GITHUB_ACTIONS, reason="Time limit.")
+def test_sinkhorn_loss_bifurcating_sde():
+    y0 = torch.zeros((500, 2))
+    dataset = BifurcatingPseudotimeDataset(y0)
+    y_true = dataset[:].permute(1, 0, 2).contiguous()
+    ts = dataset.time_points
+    y_pred_true_model = integrate_model(dataset.sde, y0, time_points=ts, dt=0.1)
+    loss_true_model = sinkhorn_loss(y_pred_true_model, y_true)
+    atol, rtol = 1e-3, 1e-3
+    torch_zero = torch.tensor(0, dtype=torch.float32)
+    assert torch.isclose(loss_true_model, torch_zero, atol=atol, rtol=rtol), (
+        "The loss of the true model should be close to 0."
+    )
+    model = GRNModelSDE(
+        dataset.n_genes(),
+        sigma=0.1,
+        shared_sigma=True,
+        fixed_sigma=True,
+        constant_noise=True,
+    )
+    y_pred_init_model = integrate_model(model, y0, time_points=ts, dt=0.1)
+    loss_init_model = sinkhorn_loss(y_pred_init_model, y_true)
+    assert loss_init_model > loss_true_model, (
+        "The loss of the untrained model should be higher than the one of the true model."
+    )
+    assert ~torch.isclose(loss_init_model, torch_zero, atol=atol, rtol=rtol), (
+        "The loss of the untrained model should not be close to 0."
+    )
+    assert loss_init_model > 0, (
+        "The loss of the untrained model should be greater than 0."
     )
 
 
