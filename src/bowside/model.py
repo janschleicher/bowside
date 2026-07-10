@@ -53,24 +53,20 @@ class GRNModel(torch.nn.Module):
             )
 
             # Mask to restrict it to only those edges that are in the prior
-            self.adj_mask = (adj != 0).int()
+            self.adj_mask = adj != 0
 
             # Ensure that adj has same signs as adj_init
             self.adj = self.adj.abs() * adj
 
         else:
             sparse_mask = torch.empty_like(self.adj)
-            torch.nn.init.sparse_(
-                sparse_mask, sparsity=adj_sparsity, std=1
-            )  # TODO: find right sparsity level
+            torch.nn.init.sparse_(sparse_mask, sparsity=adj_sparsity, std=1)
             self.adj = self.adj * (sparse_mask != 0)
-            self.adj_mask = torch.ones_like(self.adj)
+            self.adj_mask = torch.ones_like(self.adj, dtype=torch.bool)
         self.adj = torch.nn.Parameter(self.adj)
         self.adj_mask = torch.nn.Parameter(self.adj_mask, requires_grad=False)
 
         # Use log of bias and decay rates to ensure positivity
-        # TODO: consider using parametrization instead
-        # (https://docs.pytorch.org/tutorials/intermediate/parametrizations.html)
         self.log_bias = torch.empty(n_genes)
         torch.nn.init.normal_(self.log_bias, mean=0, std=0.01)
         self.log_bias = torch.nn.Parameter(self.log_bias)
