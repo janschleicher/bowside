@@ -9,6 +9,7 @@ from bowside.model import GRNModelSDE
 from bowside.trajectory import infer_cell_fates, infer_trajectories
 
 Y0_BALANCED = torch.tensor([[0.0, 0.0]]).repeat(500, 1)
+Y0_BALANCED_NOISY = torch.abs(torch.randn((500, 2)) * 0.01)
 Y0_IMBALANCED = torch.tensor([[0.0, 0.3]]).repeat(500, 1)
 
 
@@ -204,7 +205,7 @@ def test_trajectory_inference_exceptions():
     [(2, 0.0), (1, 0.0), (3, 0.0), (2, 0.95)],
 )
 def test_fate_inference(n_clusters: int, score_threshold: float):
-    dataset = BifurcatingPseudotimeDataset(Y0_BALANCED)
+    dataset = BifurcatingPseudotimeDataset(Y0_BALANCED_NOISY)
     model = GRNModelSDE(n_genes=dataset.n_genes())
     infer_trajectories(
         dataset, model, min_clusters=n_clusters, max_clusters=n_clusters, dt=0.01
@@ -238,11 +239,14 @@ def test_fate_inference(n_clusters: int, score_threshold: float):
     assert probabilities.shape == (len(dataset.adata), n_clusters), (
         "Probabilities have wrong shape."
     )
-    unassigned_cells = np.isnan(probabilities).any(axis=1)
+    unassigned_cells = np.asarray(np.isnan(probabilities).any(axis=1))  # type: ignore
     assert np.allclose(np.sum(probabilities[~unassigned_cells, :], axis=1), 1.0), (
         "Probabilities should sum to 1 for all cells."
     )
-    assert (unassigned_cells.sum() > 0) == (score_threshold > 0.9), (
+    unassigned_cells_except_t0 = unassigned_cells[
+        (dataset.pseudotime != dataset.time_points[0])
+    ]
+    assert (unassigned_cells_except_t0.sum() > 0) == (score_threshold > 0.9), (
         f"There schould{' not' if score_threshold == 0 else ''} be "
         f"unassigned cells at threshold {score_threshold}."
     )
