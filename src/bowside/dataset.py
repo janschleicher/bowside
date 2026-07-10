@@ -343,7 +343,7 @@ class BifurcatingMarkovChainDataset(MarkovChainDataset):
             0, n_steps - 1, n_steps, dtype=torch.float32, device=y0.device
         )
         simulations = integrate_model(
-            y0, self.sde, time_points=self.time_points, dt=0.1
+            self.sde, y0, time_points=self.time_points, dt=0.1
         )
         self.X = simulations.reshape(-1, simulations.shape[-1])
         self.markov_chains = torch.arange(self.X.shape[0]).reshape(
@@ -370,7 +370,7 @@ class BifurcatingPseudotimeDataset(PseudotimeDataset):
             0, n_steps - 1, n_steps, dtype=torch.float32, device=y0.device
         )
         simulations = integrate_model(
-            y0, self.sde, time_points=self.time_points, dt=0.1
+            self.sde, y0, time_points=self.time_points, dt=0.1
         )
         self.X = simulations.reshape(-1, simulations.shape[-1])
         self.pseudotime = self.time_points.repeat_interleave(simulations.shape[1])

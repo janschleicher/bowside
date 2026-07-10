@@ -160,8 +160,8 @@ def infer_trajectories(
     with torch.no_grad():
         sequences = (
             integrate_model(
-                y0,
                 model,
+                y0,
                 n_steps=n_steps,
                 time_points=time_points,
                 adjoint=False,

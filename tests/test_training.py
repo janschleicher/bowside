@@ -264,8 +264,8 @@ def test_train_integration(
 
     y = dataset[:].to(device)
     y_pred = integrate_model(
-        y[:, 0, :],
         model,
+        y[:, 0, :],
         n_steps=y.shape[1],
         solver_method=solver_method,
         dt=dt,
@@ -298,8 +298,8 @@ def test_train_integration(
     )
 
     y_pred = integrate_model(
-        y[:, 1, :],
         model,
+        y[:, 1, :],
         n_steps=y.shape[1],
         solver_method=solver_method,
         dt=dt,
@@ -379,8 +379,8 @@ def test_train_integration_maximization(
 
     y = dataset[:].to(device)
     y_pred = integrate_model(
-        y[:, 0, :],
         model,
+        y[:, 0, :],
         n_steps=y.shape[1],
         solver_method=solver_method,
         dt=dt,
@@ -441,8 +441,8 @@ def test_train_integration_maximization(
     )
 
     y_pred = integrate_model(
-        y[:, 1, :],
         model,
+        y[:, 1, :],
         n_steps=y.shape[1],
         solver_method=solver_method,
         dt=dt,
@@ -513,12 +513,12 @@ def test_training_exceptions():
         ValueError,
         match="Arguments `n_steps` and `time_points` are both `None`. You must set one of them.",
     ):
-        integrate_model(y0, model)
+        integrate_model(model, y0)
     with pytest.raises(
         ValueError,
         match="Arguments `n_steps` and `time_points` are mutually exclusive. Choose one.",
     ):
-        integrate_model(y0, model, 10, dataset.time_points)
+        integrate_model(model, y0, 10, dataset.time_points)
 
     # Wrong dataset type
     with pytest.raises(

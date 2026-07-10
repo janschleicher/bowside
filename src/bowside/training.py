@@ -240,8 +240,8 @@ class LossFunction(Protocol):
 
 
 def integrate_model(
-    y0: torch.Tensor,
     model: GRNModel,
+    y0: torch.Tensor,
     n_steps: Optional[int] = None,
     time_points: Optional[torch.Tensor] = None,
     adjoint: bool = False,
@@ -257,10 +257,10 @@ def integrate_model(
 
     Parameters
     ----------
-    y0 : torch.Tensor
-        Initial state of the differential equation of shape (batch_size, n_var).
     model : GRNModel
         The gene regulatory network model.
+    y0 : torch.Tensor
+        Initial state of the differential equation of shape (batch_size, n_var).
     n_steps : Optional[int], optional
         Number of steps to integrate. Mutually exclusive with
         `time_points`. Using this option will generate `n_steps` equally
@@ -423,8 +423,8 @@ def train_step_integration(
 
     model.train()
     pred = integrate_model(
-        y0=y[:, 0, :],
         model=model,
+        y0=y[:, 0, :],
         n_steps=n_steps,
         time_points=time_points,
         adjoint=adjoint,
@@ -504,8 +504,8 @@ def test(
     model.eval()
     with torch.no_grad():
         pred = integrate_model(
-            y0=y[:, 0, :],
             model=model,
+            y0=y[:, 0, :],
             n_steps=n_steps,
             time_points=time_points,
             adjoint=False,

@@ -136,8 +136,8 @@ def simulate_knockout(
         sequences_wt = torch.from_numpy(dataset.adata.uns["bowside"]["simulations"])
     else:
         sequences_wt = integrate_model(
-            y0,
             model,
+            y0,
             n_steps=n_steps,
             time_points=time_points,
             solver_method=solver_method,
@@ -153,8 +153,8 @@ def simulate_knockout(
     y0_ko = y0.clone()
     y0_ko[gene_idx] = 0
     sequences_ko = integrate_model(
-        y0_ko,
         model_ko,
+        y0_ko,
         n_steps=n_steps,
         time_points=time_points,
         solver_method=solver_method,
