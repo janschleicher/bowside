@@ -333,6 +333,18 @@ if __name__ == "__main__":
     parser.add_argument(
         "--n-trials", type=int, default=100, help="Number of trials for optuna tuning."
     )
+    parser.add_argument(
+        "--n-trials-per-worker",
+        type=int,
+        default=2,
+        help="Number of trials to start on one worker.",
+    )
+    parser.add_argument(
+        "--n-jobs",
+        type=int,
+        default=1,
+        help="Number of parallel processes to run.",
+    )
     args = parser.parse_args()
 
     # Load and filter adjacency list
