@@ -94,10 +94,6 @@ def objective(
                 grn.add_node(gene)
         adj = torch.from_numpy(nx.to_numpy_array(grn, nodelist=dataset.gene_names))
 
-    # Training parameters
-    num_epochs = trial.suggest_int("num_epochs", low=500, high=5000, step=500)
-    solver_method = trial.suggest_categorical("solver_method", ["Euler", "ItoMilstein"])
-
     model = GRNModelSDE(
         dataset.n_genes(),
         adj=adj,
