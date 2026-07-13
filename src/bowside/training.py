@@ -9,6 +9,7 @@ from math import floor, log10
 from pathlib import Path
 from typing import Any, List, Literal, Optional, Protocol, Tuple, Union
 
+import numpy as np
 import torch
 from geomloss import SamplesLoss
 from torchdiffeq import odeint, odeint_adjoint
@@ -965,6 +966,8 @@ def train_integration(
                 },
                 checkpoint_dir / "checkpoint_final_model.tar",
             )
+            np.save(checkpoint_dir / "train_losses.npy", np.asarray(train_losses))
+            np.save(checkpoint_dir / "test_losses.npy", np.asarray(val_losses))
             if checkpoint == "best":
                 log.info(
                     f"Best model was at epoch {best_model_epoch}, saved "
