@@ -1,6 +1,5 @@
 import argparse
 import logging
-import multiprocessing as mp
 import os
 from functools import partial
 from pathlib import Path
@@ -321,8 +320,6 @@ if __name__ == "__main__":
         help="Random seed for the initial, study-level JAX PRNG key.",
     )
     args = parser.parse_args()
-
-    mp.set_start_method("spawn", force=True)
 
     # Load and filter adjacency list
     adj_list = None
