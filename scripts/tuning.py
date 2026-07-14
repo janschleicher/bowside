@@ -358,8 +358,8 @@ if __name__ == "__main__":
         "--epochs-max",
         type=int,
         required=False,
-        default=500,
-        help="Minimum number of epochs.",
+        default=5000,
+        help="Maximum number of epochs.",
     )
     parser.add_argument(
         "--patience",
