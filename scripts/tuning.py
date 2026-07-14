@@ -1,7 +1,6 @@
 import argparse
 import logging
 from functools import partial
-from multiprocessing import Pool
 from pathlib import Path
 from typing import Literal, Optional
 
@@ -36,11 +35,18 @@ def objective(
     weighted_loss: bool,
     regularization: Optional[Literal["l1", "l2"]],
     regularization_strength: Optional[float],
+    regularization_strength_min: float,
+    regularization_strength_max: float,
+    epochs_min: int,
+    epochs_max: int,
     train_proportion: float,
     test_proportion: float,
     time_point_split: bool,
     patience: int,
 ):
+    # Set seed for this trial
+    torch.manual_seed(trial.number)
+
     # Setup per-trial logger
     checkpoint_dir = out_dir / str(trial.number)
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
@@ -110,14 +116,19 @@ def objective(
     optimizer = getattr(torch.optim, optimizer_name)(model.parameters(), lr=lr)
 
     # Training parameters
-    num_epochs = trial.suggest_int("num_epochs", low=500, high=5000, step=500)
+    num_epochs = trial.suggest_int(
+        "num_epochs", low=epochs_min, high=epochs_max, step=500
+    )
     solver_method = trial.suggest_categorical("solver_method", ["euler", "milstein"])
 
     # Regularization
     if regularization is not None:
         if regularization_strength is None:
             regularization_strength = trial.suggest_float(
-                "regularization_strength", 1e-6, 1e-2, log=True
+                "regularization_strength",
+                regularization_strength_min,
+                regularization_strength_max,
+                log=True,
             )
     else:
         regularization_strength = (
@@ -174,7 +185,6 @@ def objective(
 
 
 def run_optimization(
-    _,
     objective_func,
     out_dir: Path,
     study_name: str,
@@ -302,7 +312,8 @@ if __name__ == "__main__":
     parser.add_argument(
         "--time-point-split",
         action="store_true",
-        help="Split the dataset into train, validation, and optionally test by time point.",
+        help="Split the dataset into train, validation, and optionally "
+        "test by time point.",
     )
     parser.add_argument(
         "--regularization",
@@ -317,7 +328,38 @@ if __name__ == "__main__":
         type=float,
         required=False,
         default=None,
-        help="Adjacency matrix regularization strength. With the default `None`, treated as hyperparameter.",
+        help="Adjacency matrix regularization strength. With the "
+        "default `None`, treated as hyperparameter.",
+    )
+    parser.add_argument(
+        "--regularization-strength-min",
+        type=float,
+        required=False,
+        default=1e-5,
+        help="Minimum value for the adjacency matrix regularization "
+        "strength when treated as a tunable hyperparameter.",
+    )
+    parser.add_argument(
+        "--regularization-strength-max",
+        type=float,
+        required=False,
+        default=1e-2,
+        help="Minimum value for the adjacency matrix regularization "
+        "strength when treated as a tunable hyperparameter.",
+    )
+    parser.add_argument(
+        "--epochs-min",
+        type=int,
+        required=False,
+        default=500,
+        help="Minimum number of epochs.",
+    )
+    parser.add_argument(
+        "--epochs-max",
+        type=int,
+        required=False,
+        default=500,
+        help="Minimum number of epochs.",
     )
     parser.add_argument(
         "--patience",
@@ -328,18 +370,6 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--n-trials", type=int, default=100, help="Number of trials for optuna tuning."
-    )
-    parser.add_argument(
-        "--n-trials-per-worker",
-        type=int,
-        default=2,
-        help="Number of trials to start on one worker.",
-    )
-    parser.add_argument(
-        "--n-jobs",
-        type=int,
-        default=1,
-        help="Number of parallel processes to run.",
     )
     args = parser.parse_args()
 
@@ -376,45 +406,28 @@ if __name__ == "__main__":
         weighted_loss=args.weighted_loss,
         regularization=args.regularization,
         regularization_strength=args.regularization_strength,
+        regularization_strength_min=args.regularization_strength_min,
+        regularization_strength_max=args.regularization_strength_max,
         train_proportion=args.train_proportion,
+        epochs_min=args.epochs_min,
+        epochs_max=args.epochs_max,
         test_proportion=args.test_proportion,
         time_point_split=args.time_point_split,
         patience=args.patience,
     )
 
     # Run study
-    with Pool(processes=args.n_jobs) as pool:
-        pool.map(
-            partial(
-                run_optimization,
-                objective_func=objective_func,
-                out_dir=out_dir,
-                study_name=args.name,
-                dataset=args.input,
-                loss_func=args.loss_func,
-                weighted_loss=args.weighted_loss,
-                regularization=args.regularization,
-                regularization_strength=args.regularization_strength,
-                train_proportion=args.train_proportion,
-                test_proportion=args.test_proportion,
-                time_point_split=args.time_point_split,
-                n_trials=args.n_trials_per_worker,
-            ),
-            range(args.n_trials // args.n_trials_per_worker),
-        )
-
-    # Load finished study
-    study = optuna.load_study(
+    run_optimization(
+        objective_func=objective_func,
+        out_dir=out_dir,
         study_name=args.name,
-        storage=JournalStorage(JournalFileBackend(str(out_dir / "journal.log"))),
+        dataset=args.input,
+        loss_func=args.loss_func,
+        weighted_loss=args.weighted_loss,
+        regularization=args.regularization,
+        regularization_strength=args.regularization_strength,
+        train_proportion=args.train_proportion,
+        test_proportion=args.test_proportion,
+        time_point_split=args.time_point_split,
+        n_trials=args.n_trials,
     )
-
-    # Print and save results
-    print("Best parameters: ", study.best_params)
-    print("Best value: ", study.best_value)
-    print("Best trial: ", study.best_trial)
-    print("Number of trials: ", len(study.trials))
-    df: pd.DataFrame = study.trials_dataframe(
-        attrs=("number", "value", "params", "state")
-    )
-    df.to_csv(out_dir / "trials_dataframe.csv")
