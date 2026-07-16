@@ -31,6 +31,8 @@ def objective(
     pseudotime_key: str,
     adj_list: Optional[pd.DataFrame],
     dt: float,
+    sigma_min: float,
+    sigma_max: float,
     loss_func: str,
     weighted_loss: bool,
     regularization: Optional[Literal["l1", "l2"]],
@@ -73,7 +75,7 @@ def objective(
     adj_init_normal = (
         trial.suggest_categorical("adj_init_normal", ["True", "False"]) == "True"
     )
-    sigma = trial.suggest_float("sigma", 1e-3, 1e2, log=True)
+    sigma = trial.suggest_float("sigma", sigma_min, sigma_max, log=True)
     shared_sigma = (
         trial.suggest_categorical("shared_sigma", ["True", "False"]) == "True"
     )
@@ -283,6 +285,12 @@ if __name__ == "__main__":
         "w.r.t. the time scale of the dataset to reduce compute time.",
     )
     parser.add_argument(
+        "--sigma-min", type=float, default=1e-2, help="Minimum value for sigma."
+    )
+    parser.add_argument(
+        "--sigma-max", type=float, default=10, help="Maximum value for sigma."
+    )
+    parser.add_argument(
         "--loss-func",
         type=str,
         default="sinkhorn",
@@ -402,6 +410,8 @@ if __name__ == "__main__":
         pseudotime_key=args.pseudotime_key,
         adj_list=adj_list,
         dt=args.dt,
+        sigma_min=args.sigma_min,
+        sigma_max=args.sigma_max,
         loss_func=args.loss_func,
         weighted_loss=args.weighted_loss,
         regularization=args.regularization,
