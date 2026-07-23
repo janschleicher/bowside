@@ -100,7 +100,9 @@ def objective(
         for gene in dataset.gene_names:
             if gene not in grn.nodes():
                 grn.add_node(gene)
-        adj = torch.from_numpy(nx.to_numpy_array(grn, nodelist=dataset.gene_names))
+        adj = torch.from_numpy(nx.to_numpy_array(grn, nodelist=dataset.gene_names)).to(
+            torch.float32
+        )
 
     model = GRNModelSDE(
         dataset.n_genes(),

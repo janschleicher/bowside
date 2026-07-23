@@ -56,7 +56,7 @@ class GRNModel(torch.nn.Module):
             self.adj_mask = adj != 0
 
             # Ensure that adj has same signs as adj_init
-            self.adj = self.adj.abs() * adj
+            self.adj = self.adj.abs() * adj.to(self.adj.dtype)
 
         else:
             sparse_mask = torch.empty_like(self.adj)
