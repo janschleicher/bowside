@@ -201,7 +201,9 @@ def infer_trajectories(
             )
         num_trajectories = max(silhouette_scores, key=lambda x: silhouette_scores[x])
         labels = cluster_labels[num_trajectories]
-        adata.uns["bowside"]["silhouette_scores"] = silhouette_scores
+        adata.uns["bowside"]["silhouette_scores"] = {
+            str(key): val for key, val in silhouette_scores.items()
+        }  # use string keys; required for saving to h5ad
         adata.uns["bowside"]["num_trajectories"] = num_trajectories
         adata.uns["bowside"]["trajectory_inference_linkage"] = linkage_matrix
         adata.uns["bowside"]["trajectory_inference_clusters"] = labels

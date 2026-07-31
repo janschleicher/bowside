@@ -191,7 +191,7 @@ def simulate_all_knockouts(
     atol: float = 1e-4,
     rtol: float = 1e-5,
     loss_kwargs: dict = {},
-) -> Tuple[pd.Series, pd.DataFrame]:
+) -> Tuple[pd.DataFrame, pd.DataFrame]:
     """
     Simulate gene expression sequences for single-gene knockouts of each
     gene in `dataset` by setting the weights of all edges outgoing from
@@ -273,7 +273,7 @@ def simulate_all_knockouts(
             ).item()
 
     # Save results
-    global_diffs = pd.Series(global_diffs, name="difference")
+    global_diffs = pd.DataFrame(global_diffs, index=["difference"]).T
     effects = pd.DataFrame(
         data=effects, index=dataset.gene_names, columns=dataset.gene_names
     )
