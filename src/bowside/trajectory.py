@@ -100,7 +100,7 @@ def infer_trajectories(
         if `min_clusters` or `max_clusters` are not of type int.
     ValueError
         An error is raised if an invalid range is given for the number
-        of clkusters or if the minimum number of clusters is smaller
+        of clusters or if the minimum number of clusters is smaller
         than 1.
     NotImplementedError
         An error is raised if an invalid value for `trajectory_mode` is
