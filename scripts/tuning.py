@@ -1,8 +1,9 @@
 import argparse
 import logging
+from collections.abc import Sequence
 from functools import partial
 from pathlib import Path
-from typing import Literal, Optional
+from typing import Literal, Optional, Union
 
 import networkx as nx
 import optuna
@@ -29,6 +30,7 @@ def objective(
     layer: str,
     mask_var: str,
     pseudotime_key: str,
+    time_points: Optional[Sequence[Union[int, float]]],
     adj_list: Optional[pd.DataFrame],
     dt: float,
     sigma_min: float,
@@ -68,7 +70,11 @@ def objective(
     # Data loading
     adata = sc.read_h5ad(input_path)
     dataset = PseudotimeDataset(
-        adata=adata, layer=layer, mask_var=mask_var, pseudotime_key=pseudotime_key
+        adata=adata,
+        layer=layer,
+        mask_var=mask_var,
+        pseudotime_key=pseudotime_key,
+        time_points=time_points,
     )
 
     # Model parameters (encode booleans as strings for Optuna Dashboard)
@@ -246,6 +252,13 @@ if __name__ == "__main__":
         help="Key of the pseudotime in adata.obs.",
     )
     parser.add_argument(
+        "--time-points",
+        type=float,
+        nargs="+",
+        default=None,
+        help="Explicit time points to use for dataset construction.",
+    )
+    parser.add_argument(
         "--adj-file",
         type=str,
         help="CSV file containg the adjacency list for initialization.",
@@ -410,6 +423,7 @@ if __name__ == "__main__":
         layer=args.layer,
         mask_var=args.mask_var,
         pseudotime_key=args.pseudotime_key,
+        time_points=args.time_points,
         adj_list=adj_list,
         dt=args.dt,
         sigma_min=args.sigma_min,
