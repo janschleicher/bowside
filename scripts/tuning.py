@@ -30,6 +30,8 @@ def objective(
     layer: str,
     mask_var: str,
     pseudotime_key: str,
+    num_cells: int,
+    num_quantiles: int,
     time_points: Optional[Sequence[Union[int, float]]],
     adj_list: Optional[pd.DataFrame],
     dt: float,
@@ -74,6 +76,8 @@ def objective(
         layer=layer,
         mask_var=mask_var,
         pseudotime_key=pseudotime_key,
+        num_cells=num_cells,
+        num_quantiles=num_quantiles,
         time_points=time_points,
     )
 
@@ -199,6 +203,8 @@ def run_optimization(
     out_dir: Path,
     study_name: str,
     dataset: str,
+    num_cells: int,
+    num_quantiles: int,
     loss_func: str,
     weighted_loss: bool,
     regularization: Optional[Literal["l1", "l2"]],
@@ -216,6 +222,8 @@ def run_optimization(
         load_if_exists=True,
     )
     study.set_user_attr("dataset", dataset)
+    study.set_user_attr("num_cells", num_cells)
+    study.set_user_attr("num_quantiles", num_quantiles)
     study.set_user_attr("loss_function", loss_func)
     study.set_user_attr("weighted_loss", str(weighted_loss))
     study.set_user_attr("regularization", regularization)
@@ -250,6 +258,18 @@ if __name__ == "__main__":
         type=str,
         default="pseudotime",
         help="Key of the pseudotime in adata.obs.",
+    )
+    parser.add_argument(
+        "--num-cell",
+        type=int,
+        default=1000,
+        help="Number of cells per (pseudo)time point.",
+    )
+    parser.add_argument(
+        "--num-quantiles",
+        type=int,
+        default=20,
+        help="Number of quantiles forgenerating for sampling cells along (pseudo) time.",
     )
     parser.add_argument(
         "--time-points",
@@ -423,6 +443,8 @@ if __name__ == "__main__":
         layer=args.layer,
         mask_var=args.mask_var,
         pseudotime_key=args.pseudotime_key,
+        num_cells=args.num_cells,
+        num_quantiles=args.num_quantiles,
         time_points=args.time_points,
         adj_list=adj_list,
         dt=args.dt,
@@ -448,6 +470,8 @@ if __name__ == "__main__":
         out_dir=out_dir,
         study_name=args.name,
         dataset=args.input,
+        num_cells=args.num_cells,
+        num_quantiles=args.num_quantiles,
         loss_func=args.loss_func,
         weighted_loss=args.weighted_loss,
         regularization=args.regularization,
