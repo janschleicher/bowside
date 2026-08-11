@@ -260,7 +260,7 @@ if __name__ == "__main__":
         help="Key of the pseudotime in adata.obs.",
     )
     parser.add_argument(
-        "--num-cell",
+        "--num-cells",
         type=int,
         default=1000,
         help="Number of cells per (pseudo)time point.",
