@@ -3,7 +3,7 @@ import logging
 from collections.abc import Sequence
 from functools import partial
 from pathlib import Path
-from typing import Literal, Optional, Union
+from typing import Callable, Literal, Optional, Union
 
 import networkx as nx
 import optuna
@@ -49,7 +49,87 @@ def objective(
     test_proportion: float,
     time_point_split: bool,
     patience: int,
-):
+) -> float:
+    """
+    Optuna objective function.
+
+    Parameters
+    ----------
+    trial : optuna.Trial
+        Optuna trial.
+    input_path : str
+        Path to input AnnData object.
+    out_dir : Path
+        Output directory.
+    layer : str
+        Layer of the AnnData object to use as the gene expression values.
+    mask_var : str
+        Only use a subset of genes given by a boolean array or a string
+        referring to a column in `adata.var`.
+    pseudotime_key : str
+        Key of the (pseudo) time annotation in `adata.obs`.
+    num_cells : int
+        Number of cells to sample for each time point.
+    num_quantiles : int
+        Number of quantiles for generating for sampling cells along
+        (pseudo) time.
+    time_points : Optional[Sequence[Union[int, float]]]
+         Explicit time points to use for sampling cells. Overrides
+        `num_quantiles`. When set to None, quantiles along pseudottime
+        are used.
+    adj_list : Optional[pd.DataFrame]
+        Adjacency list for model adjacency matrix intialization. When
+        set to None, a fully connected matrix is used.
+    dt : float
+        The step size for the solver.
+    sigma_min : float
+        Minimum value of the level of the (diagonal) noise.
+    sigma_max : float
+        Maximum value of the level of the (diagonal) noise.
+    loss_func : str
+        Loss function to optimize.
+    weighted_loss : bool
+        Whether to use a loss with higher weights for later time points.
+    regularization : Optional[Literal["l1", "l2"]]
+        Regularization method for the adjacency method. Options are "l1"
+        and "l2". When set to None, no regularization is applied.
+    regularization_strength : Optional[float]
+        Relative weight of the regularization term added to the loss if
+        `regularization` is not None. When set to None, the strength
+        of regularization is tuned alongside other hyperparameters.
+    regularization_strength_min : float
+        Minimum regularization strength when it is tuned.
+    regularization_strength_max : float
+        Maximum regularization strength when it is tuned.
+    epochs_min : int
+        Minimum number of training epochs.
+    epochs_max : int
+        Maximum number of training epochs.
+    train_proportion : float
+        Proportion of samples to use for training.
+    test_proportion : float
+        Proportion of time points to use for testing of interpolation
+        performance. Only applicable if `time_point_split` is True. The
+        evaluation on the test time points is not done inside this
+        hyperparameter optimization.
+    time_point_split : bool
+        Whether to split into training, validation, and optionally test
+        data by time point instead of by sample.
+    patience : int
+        Number of epochs to wait for an improvement before stopping.
+
+    Returns
+    -------
+    float
+        Value of the final validation loss.
+
+    Raises
+    ------
+    optuna.TrialPruned
+        Raises an error if incompatible hyperparameter values are chosen,
+        if numerical instabilities arise during integration, or if the
+        loss cannot be computed.
+    """
     # Set seed for this trial
     torch.manual_seed(trial.number)
 
@@ -199,7 +279,7 @@ def objective(
 
 
 def run_optimization(
-    objective_func,
+    objective_func: Callable,
     out_dir: Path,
     study_name: str,
     dataset: str,
@@ -214,6 +294,48 @@ def run_optimization(
     time_point_split: bool,
     n_trials: int,
 ):
+    """
+    Run an optuna hyperparameter optimization.
+
+    Parameters
+    ----------
+    objective_func : Callable
+        Optuna objective function.
+    out_dir : Path
+        Output directory.
+    study_name : str
+        Name of the optuna study.
+    dataset : str
+        Path to input AnnData object.
+    num_cells : int
+        Number of cells to sample for each time point.
+    num_quantiles : int
+        Number of quantiles for generating for sampling cells along
+        (pseudo) time.
+    loss_func : str
+        Loss function to optimize.
+    weighted_loss : bool
+        Whether to use a loss with higher weights for later time points.
+    regularization : Optional[Literal["l1", "l2"]]
+        Regularization method for the adjacency method. Options are "l1"
+        and "l2". When set to None, no regularization is applied.
+    regularization_strength : Optional[float]
+        Relative weight of the regularization term added to the loss if
+        `regularization` is not None. When set to None, the strength
+        of regularization is tuned alongside other hyperparameters.
+    train_proportion : float
+        Proportion of samples to use for training.
+    test_proportion : float
+        Proportion of time points to use for testing of interpolation
+        performance. Only applicable if `time_point_split` is True. The
+        evaluation on the test time points is not done inside this
+        hyperparameter optimization.
+    time_point_split : bool
+        Whether to split into training, validation, and optionally test
+        data by time point instead of by sample.
+    n_trials : int
+        Number of optuna trials to run.
+    """
     study = optuna.create_study(
         storage=JournalStorage(
             JournalFileBackend(file_path=str(out_dir / "journal.log"))

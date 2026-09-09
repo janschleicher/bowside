@@ -136,6 +136,14 @@ class MarkovChainDataset(Dataset):
         return self.X[self.markov_chains[idx, :], :]
 
     def n_genes(self) -> int:
+        """
+        Get the number of genes in the dataset.
+
+        Returns
+        -------
+        int
+            Number of genes.
+        """
         return len(self.gene_names)
 
 
@@ -253,6 +261,14 @@ class PseudotimeDataset(Dataset):
         return self.X[self.sampled_cells[idx, :], :]
 
     def n_genes(self) -> int:
+        """
+        Get the number of genes in the dataset.
+
+        Returns
+        -------
+        int
+            Number of genes.
+        """
         return len(self.gene_names)
 
 
@@ -326,6 +342,14 @@ class VelocityDataset(Dataset):
         return self.X[idx, :], self.V[idx, :]
 
     def n_genes(self) -> int:
+        """
+        Get the number of genes in the dataset.
+
+        Returns
+        -------
+        int
+            Number of genes.
+        """
         return len(self.gene_names)
 
 
@@ -467,6 +491,18 @@ def split_by_time_point(
 
 
 class PseudotimeTimepointWrapper(Dataset):
+    """
+    Wrapper around the :class:`PseudotimeDataset` to select a subset of
+    the original time points, e.g., for train/validation/test split.
+
+    Parameters
+    ----------
+    dataset : PseudotimeDataset
+        Original dataset.
+    timepoint_indices : torch.Tensor
+        Subset of time points.
+    """
+
     def __init__(self, dataset: PseudotimeDataset, timepoint_indices: torch.Tensor):
         self.dataset = dataset
         self.time_point_indices = timepoint_indices
@@ -488,4 +524,12 @@ class PseudotimeTimepointWrapper(Dataset):
         return sliced_sample
 
     def n_genes(self) -> int:
+        """
+        Get the number of genes in the dataset.
+
+        Returns
+        -------
+        int
+            Number of genes.
+        """
         return self.dataset.n_genes()
