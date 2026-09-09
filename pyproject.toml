@@ -59,6 +59,7 @@ doc = [
     "sphinx-copybutton",
     "sphinx-autoapi",
     "scanpydoc",
+    "myst-parser",
 ]
 opt = ["optuna", "optuna-dashboard"]
 

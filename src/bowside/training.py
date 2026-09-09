@@ -199,14 +199,16 @@ def sinkhorn_loss(
     backend : Literal["auto", "tensorized", "online", "multiscale"], optional
         The implementation that will be used in the background.
         Default: "auto". Supported values:
+
         - "auto": Choose backend automatically.
         - "tensorized": Computes on a full cost/kernel matrix once and
-            and stores it on the device memory.
+          stores it on the device memory.
         - "online": Computes cost/kernel values on-the-fly.
         - "multiscale": Fast implementation that scales to millions of samples.
     p : int, optional
         Specifies the ground cost function between points. Default: 2.
         Supported values:
+
         - p=1: Euclidean distance.
         - p=2: Squared Euclidean distance.
     blur : float, optional
