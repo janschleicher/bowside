@@ -16,7 +16,7 @@ log = logging.getLogger(__name__)
 def _get_network(
     model: Optional[GRNModel] = None,
     network: Optional[nx.DiGraph] = None,
-    node_names: Optional[Sequence] = None,
+    node_names: Optional[Sequence[Union[str, int]]] = None,
 ) -> nx.DiGraph:
     """
     Construct a directed graph from a gene regulatory network model. If
@@ -36,7 +36,7 @@ def _get_network(
         attribute "weight" for all edges, optionally also the attribute
         "dist". At least one of `model` and `network` must be set.
         Default: None.
-    node_names : Optional[Sequence], optional
+    node_names : Optional[Sequence[Union[str, int]]], optional
         Node names to use when constructing the graph. Default: None
         (use integer indices as node names).
 
@@ -109,7 +109,7 @@ def _get_network(
 def degree_centrality(
     model: Optional[GRNModel] = None,
     network: Optional[nx.DiGraph] = None,
-    node_names: Optional[Sequence] = None,
+    node_names: Optional[Sequence[Union[str, int]]] = None,
 ) -> pd.Series:
     """
     Compute the degree centrality for all genes in the trained gene
@@ -126,7 +126,7 @@ def degree_centrality(
         attribute "weight" for all edges, optionally also the attribute
         "dist". At least one of `model` and `network` must be set.
         Default: None.
-    node_names : Optional[Sequence], optional
+    node_names : Optional[Sequence[Union[str, int]]], optional
         Node names to use when constructing the graph. Default: None
         (use integer indices as node names).
 
@@ -142,7 +142,7 @@ def degree_centrality(
 def outdegree_centrality(
     model: Optional[GRNModel] = None,
     network: Optional[nx.DiGraph] = None,
-    node_names: Optional[Sequence] = None,
+    node_names: Optional[Sequence[Union[str, int]]] = None,
 ) -> pd.Series:
     """
     Compute the outdegree centrality for all genes in the trained gene
@@ -159,7 +159,7 @@ def outdegree_centrality(
         attribute "weight" for all edges, optionally also the attribute
         "dist". At least one of `model` and `network` must be set.
         Default: None.
-    node_names : Optional[Sequence], optional
+    node_names : Optional[Sequence[Union[str, int]]], optional
         Node names to use when constructing the graph. Default: None
         (use integer indices as node names).
 
@@ -175,7 +175,7 @@ def outdegree_centrality(
 def indegree_centrality(
     model: Optional[GRNModel] = None,
     network: Optional[nx.DiGraph] = None,
-    node_names: Optional[Sequence] = None,
+    node_names: Optional[Sequence[Union[str, int]]] = None,
 ) -> pd.Series:
     """
     Compute the indegree centrality for all genes in the trained gene
@@ -192,7 +192,7 @@ def indegree_centrality(
         attribute "weight" for all edges, optionally also the attribute
         "dist". At least one of `model` and `network` must be set.
         Default: None.
-    node_names : Optional[Sequence], optional
+    node_names : Optional[Sequence[Union[str, int]]], optional
         Node names to use when constructing the graph. Default: None
         (use integer indices as node names).
 
@@ -208,7 +208,7 @@ def indegree_centrality(
 def closeness_centrality(
     model: Optional[GRNModel] = None,
     network: Optional[nx.DiGraph] = None,
-    node_names: Optional[Sequence] = None,
+    node_names: Optional[Sequence[Union[str, int]]] = None,
 ) -> pd.Series:
     """
     Compute the closeness centrality for all genes in the trained gene
@@ -226,7 +226,7 @@ def closeness_centrality(
         attribute "weight" for all edges, optionally also the attribute
         "dist". At least one of `model` and `network` must be set.
         Default: None.
-    node_names : Optional[Sequence], optional
+    node_names : Optional[Sequence[Union[str, int]]], optional
         Node names to use when constructing the graph. Default: None
         (use integer indices as node names).
 
@@ -244,7 +244,7 @@ def closeness_centrality(
 def betweenness_centrality(
     model: Optional[GRNModel] = None,
     network: Optional[nx.DiGraph] = None,
-    node_names: Optional[Sequence] = None,
+    node_names: Optional[Sequence[Union[str, int]]] = None,
 ) -> pd.Series:
     """
     Compute the betweenness centrality for all genes in the trained gene
@@ -262,7 +262,7 @@ def betweenness_centrality(
         attribute "weight" for all edges, optionally also the attribute
         "dist". At least one of `model` and `network` must be set.
         Default: None.
-    node_names : Optional[Sequence], optional
+    node_names : Optional[Sequence[Union[str, int]]], optional
         Node names to use when constructing the graph. Default: None
         (use integer indices as node names).
 
@@ -281,7 +281,7 @@ def betweenness_centrality(
 def edge_betweenness_centrality(
     model: Optional[GRNModel] = None,
     network: Optional[nx.DiGraph] = None,
-    node_names: Optional[Sequence] = None,
+    node_names: Optional[Sequence[Union[str, int]]] = None,
 ) -> pd.DataFrame:
     """
     Compute the betweenness centrality for all edges in the trained gene
@@ -299,7 +299,7 @@ def edge_betweenness_centrality(
         attribute "weight" for all edges, optionally also the attribute
         "dist". At least one of `model` and `network` must be set.
         Default: None.
-    node_names : Optional[Sequence], optional
+    node_names : Optional[Sequence[Union[str, int]]], optional
         Node names to use when constructing the graph. Default: None
         (use integer indices as node names).
 
@@ -322,7 +322,7 @@ def edge_betweenness_centrality(
 def eigenvector_centrality(
     model: Optional[GRNModel] = None,
     network: Optional[nx.DiGraph] = None,
-    node_names: Optional[Sequence] = None,
+    node_names: Optional[Sequence[Union[str, int]]] = None,
 ) -> pd.Series:
     """
     Compute the closeness centrality for all genes in the trained gene
@@ -340,7 +340,7 @@ def eigenvector_centrality(
         attribute "weight" for all edges, optionally also the attribute
         "dist". At least one of `model` and `network` must be set.
         Default: None.
-    node_names : Optional[Sequence], optional
+    node_names : Optional[Sequence[Union[str, int]]], optional
         Node names to use when constructing the graph. Default: None
         (use integer indices as node names).
 

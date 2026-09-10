@@ -10,6 +10,7 @@ import os
 import re
 from functools import partial
 
+import torch
 from docutils import nodes
 from sphinx.application import Sphinx
 
@@ -58,7 +59,7 @@ autodoc_default_options = {
     "member-order": "alphabetical",
     "show-inheritance": True,
 }
-autodoc_typehints = "both"
+autodoc_typehints = "description"
 napoleon_google_docstring = False
 napoleon_numpy_docstring = True
 napoleon_include_init_with_doc = False
@@ -66,7 +67,10 @@ napoleon_use_rtype = True
 napoleon_use_param = True
 
 intersphinx_mapping = dict(
+    anndata=("https://anndata.readthedocs.io/en/stable/", None),
+    networkx=("https://networkx.org/documentation/stable/", None),
     numpy=("https://numpy.org/doc/stable/", None),
+    pandas=("https://pandas.pydata.org/docs/", None),
     python=("https://docs.python.org/3", None),
     scipy=("https://docs.scipy.org/doc/scipy/", None),
     torch=("https://docs.pytorch.org/docs/stable/", None),
@@ -136,14 +140,31 @@ def replace_directives(app, docname, source):
 def setup(app: Sphinx) -> None:
     """App setup hook."""
 
+    def skip_member(app, what, name, obj, skip, options):
+        module_member = getattr(torch.nn.Module, name, None)
+        if module_member is not None:
+            return True
+        return None
+
     def link_replace(line):
         if line is not None:
+            line = line.replace("np.typing.ArrayLike", "~numpy.typing.ArrayLike")
+            line = line.replace("NDArray[", "~numpy.typing.NDArray[")
+            line = line.replace("ad.AnnData", "~anndata.AnnData")
+            line = line.replace("pd.Index", "~pandas.Index")
+            line = line.replace("np.ndarray", "~numpy.ndarray")
+            line = line.replace("ad.", "~anndata.")
+            line = line.replace("np.", "~numpy.")
+            line = line.replace("nx.", "~networkx.")
+            line = line.replace("pd.", "~pandas.")
             line = line.replace("List[", "~typing.List[")
             line = line.replace("Tuple[", "~typing.Tuple[")
             line = line.replace("Dict[", "~typing.Dict[")
             line = line.replace("Literal[", "~typing.Literal[")
             line = line.replace("Union[", "~typing.Union[")
             line = line.replace("Optional[", "~typing.Optional[")
+            line = line.replace("Sequence[", "collections.abc.Sequence[")
+            line = line.replace("Collection[", "collections.abc.Collection[")
         return line
 
     def autodoc_process_docstring(app, what, name, obj, options, lines):
@@ -153,8 +174,9 @@ def setup(app: Sphinx) -> None:
     def autodoc_process_signature(
         app, what, name, obj, options, signature, return_annotation
     ):
-        return link_replace(signature), link_replace(return_annotation)
+        return signature, return_annotation
 
+    app.connect("autodoc-skip-member", skip_member)
     app.connect("autodoc-process-docstring", autodoc_process_docstring)
     app.connect("autodoc-process-signature", autodoc_process_signature)
 

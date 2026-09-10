@@ -85,7 +85,22 @@ class GRNModel(torch.nn.Module):
             case "relu":
                 self.activation = torch.nn.ReLU()
 
-    def forward(self, t, x):
+    def forward(self, t: torch.Tensor, x: torch.Tensor) -> torch.Tensor:
+        """
+        ODE function.
+
+        Parameters
+        ----------
+        t : torch.Tensor
+            Time; required for integration over time.
+        x : torch.Tensor
+            Input gene expression.
+
+        Returns
+        -------
+        torch.Tensor
+            Rate of change.
+        """
         return (
             self.log_scale.exp()
             * self.activation(x @ (self.adj * self.adj_mask) + self.log_bias.exp())
@@ -120,6 +135,14 @@ class GRNModel(torch.nn.Module):
             self.adj.copy_(self.adj * self.adj_mask)
 
     def n_genes(self) -> int:
+        """
+        Get the number of genes in this model.
+
+        Returns
+        -------
+        int
+            Number of genes
+        """
         return self.adj.size(0)
 
 
@@ -195,10 +218,40 @@ class GRNModelSDE(GRNModel):
                 )
         self.constant_noise = torch.nn.Buffer(torch.tensor(constant_noise))
 
-    def f(self, t, x):
+    def f(self, t: torch.Tensor, x: torch.Tensor) -> torch.Tensor:
+        """
+        Drift function.
+
+        Parameters
+        ----------
+        t : torch.Tensor
+            Time; required for integration over time.
+        x : torch.Tensor
+            Input gene expression.
+
+        Returns
+        -------
+        torch.Tensor
+            Deterministic part of rate of change.
+        """
         return super().forward(t, x)
 
-    def g(self, t, x):
+    def g(self, t: torch.Tensor, x: torch.Tensor) -> torch.Tensor:
+        """
+        Diffusion function
+
+        Parameters
+        ----------
+        t : torch.Tensor
+            Time; required for integration over time.
+        x : torch.Tensor
+            Input gene expression.
+
+        Returns
+        -------
+        torch.Tensor
+            Stochastic part of rate of change.
+        """
         sigma = self.log_sigma.exp().expand(x.size(0), x.size(1))
         if self.constant_noise:
             return sigma

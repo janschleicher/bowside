@@ -30,8 +30,8 @@ class MarkovChainDataset(Dataset):
         If `None`, use adata.X. Default: None.
     mask_var : Optional[Union[NDArray[np.bool_], str]], optional
         Only use a subset of genes given by a boolean array or a string
-        referring to a column in `adata.var`. Default: None (use
-        all genes).
+        referring to a column in `adata.var`. Default: "highly_variable".
+        When set to None, use all genes.
     tpm_key : str, optional
         Key of the transition probability matrix in `adata.obsp` or
         `adata.uns`. Default: "T_forward".
@@ -161,8 +161,8 @@ class PseudotimeDataset(Dataset):
         If `None`, use adata.X. Default: None.
     mask_var : Optional[Union[NDArray[np.bool_], str]], optional
         Only use a subset of genes given by a boolean array or a string
-        referring to a column in `adata.var`. Default: None (use
-        all genes).
+        referring to a column in `adata.var`. Default: "highly_variable".
+        When set to None, use all genes.
     pseudotime_key : str, optional
         Key of the (pseudo) time annotation in `adata.obs`. Default:
         "pseudotime".
@@ -286,8 +286,8 @@ class VelocityDataset(Dataset):
         By default "Ms".
     mask_var : Optional[Union[NDArray[np.bool_], str]], optional
         Only use a subset of genes given by a boolean array or a string
-        referring to a column in `adata.var`. By default, None (use
-        all genes).
+        referring to a column in `adata.var`. Default: "highly_variable".
+        When set to None, use all genes.
     vkey : str, optional
         Name of velocity estimates to be used. By default "velocity".
     """
