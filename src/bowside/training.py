@@ -326,6 +326,9 @@ def integrate_model(
     else:
         raise TypeError(f"Expected type GRNModel, but got {type(model)}.")
 
+    # Make y0 the right dtype
+    y0 = y0.to(model.adj.dtype)
+
     if n_steps is None:
         if time_points is None:
             raise ValueError(
@@ -447,7 +450,9 @@ def train_step_integration(
         raise NaNTensorError("Numerical integration resulted in all NaN tensor.")
 
     # Backpropagation
-    loss = loss_func(pred.contiguous(), y.permute(1, 0, 2).contiguous(), **loss_kwargs)
+    loss = loss_func(
+        pred.contiguous(), y.permute(1, 0, 2).contiguous().to(pred.dtype), **loss_kwargs
+    )
     if loss.dim() >= 1:
         loss = loss.sum()
     if regularization is not None:
@@ -527,7 +532,9 @@ def test(
             raise NaNTensorError("Numerical integration resulted in all NaN tensor.")
 
         loss = loss_func(
-            pred.contiguous(), y.permute(1, 0, 2).contiguous(), **loss_kwargs
+            pred.contiguous(),
+            y.permute(1, 0, 2).contiguous().to(pred.dtype),
+            **loss_kwargs,
         )
         if loss.dim() >= 1:
             loss = loss.sum()
