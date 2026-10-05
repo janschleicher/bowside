@@ -5,6 +5,7 @@ from typing import Union
 
 import numpy as np
 import pandas as pd
+from scipy.special import logsumexp
 from scipy.stats import multivariate_normal
 
 
@@ -92,10 +93,50 @@ class GaussianMixture:
             Array of shape (n_samples, n_components) containing the PDF
             value for each sample and component.
         """
+        return np.exp(self.component_log_pdfs(X))
+
+    def component_log_pdfs(self, X: np.typing.ArrayLike) -> np.ndarray:
+        """
+        Evaluate the components' Log-PDF for each sample.
+
+        Parameters
+        ----------
+        X : np.typing.ArrayLike
+            Array of shape (n_samples, n_var). A 1-dimensional array of
+            shape (n_var,) can be passed as well for a single sample.
+
+        Returns
+        -------
+        np.ndarray
+            Array of shape (n_samples, n_components) containing the Log-
+            PDF value for each sample and component.
+        """
         X = np.asarray(X, dtype=float)
         if X.ndim == 1:
             X = X[None, :]
-        return np.column_stack([component.pdf(X) for component in self.components])
+        return np.column_stack([component.logpdf(X) for component in self.components])
+
+    def _weighted_component_log_densities(self, X: np.typing.ArrayLike) -> np.ndarray:
+        """
+        Helper function for computing weighted log densitities.
+
+        Parameters
+        ----------
+        X : np.typing.ArrayLike
+            Array of shape (n_samples, n_var). A 1-dimensional array of
+            shape (n_var,) can be passed as well for a single sample.
+
+        Returns
+        -------
+        np.ndarray
+            Array of shape (n_samples, n_components) containing the
+            weighted log-densities for each sample and component.
+        """
+        component_log_density = self.component_log_pdfs(X)
+        log_weights = np.full_like(self.weights, -np.inf)
+        positive_weights = self.weights > 0.0
+        log_weights[positive_weights] = np.log(self.weights[positive_weights])
+        return component_log_density + log_weights
 
     def predict_proba(self, X: np.typing.ArrayLike) -> np.ndarray:
         """
@@ -113,9 +154,11 @@ class GaussianMixture:
             Array of shape (n_samples, n_components) containing the
             probabilities for each sample and component.
         """
-        component_density = self.component_pdfs(X)
-        weighted_density = component_density * self.weights
-        return weighted_density / weighted_density.sum(axis=1, keepdims=True)
+        weighted_log_density = self._weighted_component_log_densities(X)
+        return np.exp(
+            weighted_log_density
+            - logsumexp(weighted_log_density, axis=1, keepdims=True)
+        )
 
     def score_samples(self, X: np.typing.ArrayLike) -> np.ndarray:
         """
@@ -133,8 +176,9 @@ class GaussianMixture:
             Array of shape (n_samples, n_components) containing the
             log-likelihood for each sample given the mixture model.
         """
-        component_density = self.component_pdfs(X)
-        return np.log((component_density * self.weights).sum(axis=1))
+        scores = logsumexp(self._weighted_component_log_densities(X), axis=1)
+        assert isinstance(scores, np.ndarray)
+        return scores
 
 
 class GaussianMixtureTimeseries:
@@ -271,9 +315,10 @@ class GaussianMixtureTimeseries:
         )
         pdfs = np.zeros((X.shape[0], self.n_components))
         for tp_index in np.unique(time_point_idx):
-            pdfs[time_point_idx == tp_index, :] = self.gaussian_mixtures[
-                tp_index
-            ].component_pdfs(X[time_point_idx == tp_index, :])
+            row_mask = time_point_idx == tp_index
+            pdfs[row_mask, :] = self.gaussian_mixtures[tp_index].component_pdfs(
+                X[row_mask, :]
+            )
         return pdfs
 
     def predict_proba(
@@ -302,9 +347,23 @@ class GaussianMixtureTimeseries:
             probabilities for each sample and component, given the time
             points.
         """
-        component_density = self.component_pdfs(X, time_points)
-        weighted_density = component_density * self.weights
-        return weighted_density / weighted_density.sum(axis=1, keepdims=True)
+        X = np.asarray(X, dtype=float)
+        if X.ndim == 1:
+            X = X[None, :]
+        if isinstance(time_points, (int, float)):
+            time_points = [time_points]
+        if len(time_points) != X.shape[0]:
+            raise ValueError("Mismatching number of samples and time points.")
+        time_point_idx = np.asarray(
+            [self.time_points.get_loc(tp) for tp in time_points]
+        )
+        probabilities = np.zeros((X.shape[0], self.n_components))
+        for tp_index in np.unique(time_point_idx):
+            row_mask = time_point_idx == tp_index
+            probabilities[row_mask, :] = self.gaussian_mixtures[tp_index].predict_proba(
+                X[row_mask, :]
+            )
+        return probabilities
 
     def score_samples(
         self,
@@ -332,5 +391,18 @@ class GaussianMixtureTimeseries:
             log-likelihood for each sample given the mixture model of
             the respective time points.
         """
-        component_density = self.component_pdfs(X, time_points)
-        return np.log((component_density * self.weights).sum(axis=1))
+        X = np.asarray(X, dtype=float)
+        if X.ndim == 1:
+            X = X[None, :]
+        if isinstance(time_points, (int, float)):
+            time_points = [time_points]
+        time_point_idx = np.asarray(
+            [self.time_points.get_loc(tp) for tp in time_points]
+        )
+        scores = np.zeros(X.shape[0])
+        for tp_index in np.unique(time_point_idx):
+            row_mask = time_point_idx == tp_index
+            scores[row_mask] = self.gaussian_mixtures[tp_index].score_samples(
+                X[row_mask, :]
+            )
+        return scores

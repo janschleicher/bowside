@@ -48,6 +48,19 @@ def test_gaussian_mixture():
     )
 
 
+def test_gaussian_mixture_predict_proba_avoids_density_underflow():
+    model = GaussianMixture(
+        weights=[0.5, 0.5],
+        means=[[-2.0], [2.0]],
+        covariances=[[[0.5]], [[0.5]]],
+    )
+
+    probabilities = model.predict_proba([[1000.0]])
+
+    assert np.all(np.isfinite(probabilities))
+    assert np.isclose(probabilities.sum(axis=1), 1.0).all()
+
+
 def test_gaussian_mixture_exceptions():
     weights = np.array([0.25, 0.75], dtype=float)
     means = np.array([[-2.0], [2.0]], dtype=float)
