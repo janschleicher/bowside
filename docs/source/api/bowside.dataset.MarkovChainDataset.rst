@@ -1,6 +1,7 @@
 bowside.dataset.MarkovChainDataset
 ==================================
 
+
 .. currentmodule:: bowside.dataset
 
 .. add toctree option to make autodoc generate the pages
@@ -14,11 +15,21 @@ bowside.dataset.MarkovChainDataset
    .. autosummary::
       :toctree: .
    
+      
       ~MarkovChainDataset.adata
+      
+      
       ~MarkovChainDataset.X
+      
+      
       ~MarkovChainDataset.sampler
+      
+      
       ~MarkovChainDataset.markov_chains
+      
+      
       ~MarkovChainDataset.gene_names
+      
    
    
 

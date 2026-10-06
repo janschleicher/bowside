@@ -1,6 +1,7 @@
 bowside.mixture.GaussianMixtureTimeseries
 =========================================
 
+
 .. currentmodule:: bowside.mixture
 
 .. add toctree option to make autodoc generate the pages

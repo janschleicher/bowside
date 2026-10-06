@@ -1,6 +1,7 @@
 bowside.dataset.PseudotimeTimepointWrapper
 ==========================================
 
+
 .. currentmodule:: bowside.dataset
 
 .. add toctree option to make autodoc generate the pages

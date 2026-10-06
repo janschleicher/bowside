@@ -1,6 +1,7 @@
 bowside.dataset.BifurcatingMarkovChainDataset
 =============================================
 
+
 .. currentmodule:: bowside.dataset
 
 .. add toctree option to make autodoc generate the pages
@@ -14,11 +15,21 @@ bowside.dataset.BifurcatingMarkovChainDataset
    .. autosummary::
       :toctree: .
    
+      
       ~BifurcatingMarkovChainDataset.adata
+      
+      
       ~BifurcatingMarkovChainDataset.X
+      
+      
       ~BifurcatingMarkovChainDataset.sampler
+      
+      
       ~BifurcatingMarkovChainDataset.markov_chains
+      
+      
       ~BifurcatingMarkovChainDataset.gene_names
+      
    
    
 

@@ -5,7 +5,7 @@
 
 ```{toctree}
 :maxdepth: 2
-:hidden:
+:caption: Contents:
 installation.md
 api.rst
 release_notes.md

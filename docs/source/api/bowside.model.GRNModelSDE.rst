@@ -1,6 +1,7 @@
 bowside.model.GRNModelSDE
 =========================
 
+
 .. currentmodule:: bowside.model
 
 .. add toctree option to make autodoc generate the pages
@@ -8,13 +9,6 @@ bowside.model.GRNModelSDE
 .. autoclass:: GRNModelSDE
 
    
-   
-   .. rubric:: Attributes
-
-   .. autosummary::
-      :toctree: .
-   
-      ~GRNModelSDE.training
    
    
 

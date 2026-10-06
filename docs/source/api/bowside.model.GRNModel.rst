@@ -1,6 +1,7 @@
 bowside.model.GRNModel
 ======================
 
+
 .. currentmodule:: bowside.model
 
 .. add toctree option to make autodoc generate the pages
@@ -8,13 +9,6 @@ bowside.model.GRNModel
 .. autoclass:: GRNModel
 
    
-   
-   .. rubric:: Attributes
-
-   .. autosummary::
-      :toctree: .
-   
-      ~GRNModel.training
    
    
 
@@ -25,6 +19,7 @@ bowside.model.GRNModel
    .. autosummary::
       :toctree: .
    
+      ~GRNModel.forward
       ~GRNModel.n_genes
       ~GRNModel.prune
    

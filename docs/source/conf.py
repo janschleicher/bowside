@@ -9,17 +9,20 @@
 import os
 import re
 from functools import partial
+from importlib.metadata import PackageNotFoundError
+from importlib.metadata import version as package_version
 
-import torch
+import scipy as _scipy  # noqa
 from docutils import nodes
 from sphinx.application import Sphinx
-
-import bowside
 
 project = "bowside"
 copyright = "%Y, Jan T. Schleicher"
 author = "Jan T. Schleicher"
-release = ".".join(bowside.__version__.split(".")[:3])
+try:
+    release = ".".join(package_version("bowside").split(".")[:3])
+except PackageNotFoundError:
+    release = "dev"
 
 # -- General configuration ---------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#general-configuration
@@ -50,8 +53,12 @@ html_theme_options = dict(
     use_repository_button=True,
     repository_url="https://github.com/janschleicher/bowside",
     repository_branch="main",
+    logo={"text": "bowside"},
 )
 html_title = "bowside"
+html_static_path = ["_static"]
+html_logo = "_static/img/logo.svg"
+html_css_files = ["custom.css"]
 
 # Automatic generation of API documentation
 autosummary_generate = True
@@ -141,8 +148,11 @@ def setup(app: Sphinx) -> None:
     """App setup hook."""
 
     def skip_member(app, what, name, obj, skip, options):
-        module_member = getattr(torch.nn.Module, name, None)
-        if module_member is not None:
+        if name.startswith("__") and name.endswith("__"):
+            return True
+        if name in {"call_super_init", "dump_patches", "training"}:
+            return True
+        if getattr(obj, "__module__", "").startswith("torch.nn.modules.module"):
             return True
         return None
 
