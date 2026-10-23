@@ -12,6 +12,18 @@ Biologically-inspired Optimization of regulatory Weights for Simulation and Infe
 
 ## Installation
 
+To use *bowside*, we recommend installing it in a fresh virtual environment with Python version $\geq$.
+You can set up the environment as follows (for Python 3.12):
+
+    conda create -n <env_name> python=3.12
+    conda activate <env_name>
+
+### From PyPI
+
+You can install the package directly from PyPI:
+
+    pip install bowside
+
 ### Latest version from GitHub
 
 Clone the repository:
