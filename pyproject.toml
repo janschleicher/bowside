@@ -125,6 +125,15 @@ line-ending = "auto"
 # reStructuredText code/literal blocks and doctests are all supported.
 docstring-code-format = true
 
+[tool.hatch.build.targets.sdist]
+include = [
+    "src/bowside",
+    "tests",
+    "README.md",
+    "LICENSE",
+    "pyproject.toml",
+]
+
 [tool.hatch.build.targets.wheel]
 packages = ["src/bowside"]
 [tool.hatch.version]
