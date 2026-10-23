@@ -5,6 +5,7 @@
 [![Code style: ruff](https://img.shields.io/badge/code%20style-ruff-red)](https://github.com/astral-sh/ruff)
 [![codecov](https://codecov.io/gh/janschleicher/bowside/graph/badge.svg?token=UqgdiVWAQi)](https://codecov.io/gh/janschleicher/bowside)
 [![Python package](https://github.com/janschleicher/bowside/actions/workflows/python-package.yml/badge.svg)](https://github.com/janschleicher/bowside/actions/workflows/python-package.yml)
+[![PyPI - Version](https://img.shields.io/pypi/v/bowside)](https://pypi.org/project/bowside/)
 
 # bowside
 
