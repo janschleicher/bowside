@@ -44,6 +44,8 @@ source_suffix = {".rst": "restructuredtext", ".txt": "markdown", ".md": "markdow
 
 suppress_warnings = ["myst.header"]
 
+myst_enable_extensions = ["dollarmath"]
+
 
 # -- Options for HTML output -------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#options-for-html-output
